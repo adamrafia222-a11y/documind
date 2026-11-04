@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DocuMind AI</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧾</text></svg>">
+<link rel="stylesheet" href="styles.css?v=9">
+<link rel="stylesheet" href="shell.css?v=9">
+</head>
+<body>
+<canvas id="fx"></canvas><div class="orb o1"></div><div class="orb o2"></div>
+<div id="gfx" class="gfx"></div>
+<div id="site" class="site" hidden>
+  <header class="snav">
+    <div class="brand"><span class="logo">D</span><b>DocuMind AI</b></div>
+    <nav><a href="#s-features">Features</a><a href="#s-how">How it works</a><a href="#s-data">Dataset</a></nav>
+    <div><button class="ghost" data-open="login">Sign in</button><button class="btn sm" data-open="register">Get started</button></div>
+  </header>
+  <section class="sh">
+    <div class="reveal vis">
+      <span class="tag">● AI DOCUMENT INTELLIGENCE</span>
+      <h1>Turn invoice photos into <span>structured data</span>.</h1>
+      <p>Upload a scan or a phone picture. DocuMind finds every field, rebuilds the line-item table, checks the maths and hands you a clean CSV, in seconds.</p>
+      <div class="cta"><button class="btn" data-open="register">Get started →</button><a class="ghost" href="#s-how">See how it works</a></div>
+      <ul class="kpis" id="kpis"><li><b>10,000</b>training invoices</li><li><b>50</b>layout templates</li><li><b>94%</b>field F1 (test)</li></ul>
+    </div>
+    <div class="holo"><div class="scan"></div><i class="t"></i><i></i><i style="width:70%"></i><i style="margin-top:34px"></i><i></i><i></i><i style="width:60%"></i><i style="margin-top:34px;width:40%"></i>
+      <span class="bx" style="top:8%;left:7%;width:42%;height:7%"><b>SELLER</b></span><span class="bx" style="top:8%;right:7%;width:30%;height:7%"><b>DATE</b></span>
+      <span class="bx" style="top:34%;left:7%;right:7%;height:26%"><b>TABLE · 2 ITEMS ✓</b></span><span class="bx" style="bottom:9%;right:7%;width:38%;height:9%"><b>TOTAL 11,800</b></span></div>
+  </section>
+  <div class="mq" id="mq"></div>
+  <section id="s-demo" class="sec"><h2 class="reveal">Try it <span class="glow">right now</span></h2><p class="reveal">Drop an invoice photo or PDF. Nothing is stored unless you are signed in.</p>
+    <div class="demo card reveal"><label id="ddrop" class="drop" tabindex="0"><input id="dfile" type="file" accept="image/*,.pdf" hidden><div class="drop-ico">⇪</div><b>Drop an invoice here</b><span>or click to browse · JPG, PNG, PDF</span></label><div id="dres" class="dres"></div></div></section>
+  <section id="s-features" class="sec"><h2 class="reveal">Built to read <span class="glow">real documents</span></h2><p class="reveal">From a crisp PDF to a crooked phone photo.</p>
+    <div class="fg">
+      <div class="fc reveal"><b>⌖</b><h3>Field detection</h3><p>Seller, buyer, dates, totals, tax and more, located on the page with a confidence score.</p></div>
+      <div class="fc reveal"><b>▦</b><h3>Table rebuilding</h3><p>Line items are rebuilt row by row and cross-checked against the printed subtotal and total.</p></div>
+      <div class="fc reveal"><b>◎</b><h3>Photo ready</h3><p>Automatic straightening, upscaling and cleanup so small or tilted pictures still read.</p></div>
+      <div class="fc reveal"><b>⇩</b><h3>Clean exports</h3><p>One click to CSV (document or line items) or JSON, ready for your accounting tools.</p></div>
+      <div class="fc reveal"><b>◷</b><h3>Private history</h3><p>Every scan is saved to your account with its original image, searchable and reopenable.</p></div>
+      <div class="fc reveal"><b>⛁</b><h3>Your own dataset</h3><p>Your scans build a dataset you can download any time, images and extracted data together.</p></div>
+    </div></section>
+  <section id="s-how" class="sec"><h2 class="reveal">Three steps. <span class="glow">No templates.</span></h2><p class="reveal">No setup per supplier: the model has seen 50 different invoice layouts.</p>
+    <div class="steps3"><div class="fc reveal"><b>1</b><h3>Upload</h3><p>Drop JPG, PNG or PDF files, or paste straight from the clipboard.</p></div><div class="fc reveal"><b>2</b><h3>Review</h3><p>See each detected field drawn on the document, with confidence and a table check.</p></div><div class="fc reveal"><b>3</b><h3>Export</h3><p>Download CSV or JSON, or keep everything in your dataset for later.</p></div></div></section>
+  <section class="sec"><h2 class="reveal">Good <span class="glow">questions</span></h2><p class="reveal">Straight answers, including the limits.</p><div class="faq reveal">
+    <details><summary>Which files can I upload?</summary><p>JPG, PNG and PDF, up to 20 MB each. Several files can be processed in one go.</p></details>
+    <details><summary>Is my data private?</summary><p>Documents are processed on the server you run DocuMind on. Signed-in scans are stored under your account only; nothing is stored for the live demo above.</p></details>
+    <details><summary>How accurate is it?</summary><p>The model scores about 94% F1 on held-out invoice layouts from FATURA, a synthetic dataset. Real invoices vary, so every field shows a confidence score and the table is checked against the printed totals for you to review.</p></details>
+    <details><summary>What can I export?</summary><p>CSV (one row per document, or one row per line item), JSON, and your whole dataset as a zip with the original images.</p></details>
+  </div></section>
+  <section id="s-data" class="sec band"><h2 class="reveal">Every scan becomes <span class="glow">your dataset</span></h2><p class="reveal">Create an account and your scans, images and extracted fields are stored together and exportable as one archive.</p><button class="btn" data-open="register">Create your account</button></section>
+  <footer class="sfoot"><span>© DocuMind AI · university project</span><span>Trained on the synthetic FATURA dataset: scores on real invoices will vary.</span></footer>
+</div>
+
+<div id="auth" class="modal" hidden>
+  <div class="login card">
+    <button class="icon mx" id="amx" aria-label="Close">✕</button>
+    <div class="tabs" id="amode"><button class="on" data-m="login">Sign in</button><button data-m="register">Create account</button></div>
+    <form id="aform" class="aform">
+      <input id="aname" class="in" placeholder="Full name" autocomplete="name" hidden>
+      <input id="aemail" class="in" type="email" placeholder="Email" autocomplete="email" required>
+      <input id="apass" class="in" type="password" placeholder="Password (8+ characters)" autocomplete="current-password" required>
+      <p id="aerr" class="err"></p>
+      <button id="asub" class="btn">Sign in</button>
+    </form>
+    <small class="muted">Documents are processed on your own server. Passwords are salted and hashed.</small>
+  </div>
+</div>
+
+<div id="app" hidden>
+<header class="top">
+  <div class="brand"><span class="logo">D</span><div><b>DocuMind AI</b><small>Invoice field extraction</small></div></div>
+  <nav class="nav" id="nav"><button data-go="work">Workspace</button><button data-go="dash">Dashboard</button><button data-go="hist">History</button><button data-go="data">Dataset</button></nav>
+  <div class="tools">
+    <span id="health" class="pill off"><i></i><span>connecting…</span></span>
+    <input id="api" class="api" spellcheck="false" title="Backend URL" aria-label="Backend URL">
+    <button id="kbtn" class="ghost" title="Search (Ctrl+K)">⌘K</button>
+    <div class="me"><span class="av" id="av"></span><b id="uname"></b><button id="out" class="ghost">Sign out</button></div>
+    <button id="theme" class="icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+<section data-v="work">
+<main class="grid">
+  <section class="left">
+    <label id="drop" class="drop" tabindex="0">
+      <input id="file" type="file" accept="image/*,.pdf" multiple hidden>
+      <div class="drop-ico">⇪</div>
+      <b>Drop invoices here</b>
+      <span>or click to browse · JPG, PNG, PDF</span>
+    </label>
+    <div class="queue-head"><h3>Documents <em id="count">0</em></h3>
+      <div><button id="csvAll" class="ghost" disabled>⬇ CSV (all)</button><button id="clear" class="ghost" disabled>Clear</button></div></div>
+    <div id="bar" class="bar" hidden><i></i></div>
+    <ul id="queue" class="queue"></ul>
+    <p id="empty" class="muted center">No document yet. Upload one to see the extracted fields.</p>
+  </section>
+
+  <section class="right">
+    <div id="welcome" class="card welcome">
+      <p class="hi" id="hi"></p>
+      <h2>From scan to structured data</h2>
+      <p>Upload an invoice and DocuMind locates every field — seller, buyer, dates, totals — draws it on the page and exports a clean CSV.</p>
+      <div class="steps"><div><b>1</b>Upload</div><div><b>2</b>Review boxes &amp; confidence</div><div><b>3</b>Export CSV / JSON</div></div>
+      <div class="wact"><button class="btn sm" id="sample">✦ Try a sample invoice</button></div>
+      <div class="recent" id="recent"></div>
+    </div>
+
+    <div id="result" hidden>
+      <div id="warn" class="warn" hidden></div>
+      <div class="stats" id="stats"></div>
+      <div class="split">
+        <div class="card viewer"><div id="stage" class="stage"></div></div>
+        <div class="card panel">
+          <div class="panel-head">
+            <div class="tabs"><button data-tab="fields" class="on">Fields</button><button data-tab="items">Items</button><button data-tab="row">Row</button><button data-tab="json">JSON</button></div>
+            <div><button id="csvOne" class="ghost">⬇ CSV</button><button id="csvItems" class="ghost">⬇ Items</button><button id="jsonCopy" class="ghost">Copy JSON</button></div>
+          </div>
+          <input id="q" class="search" placeholder="Filter fields…" aria-label="Filter fields">
+          <div id="tab-fields" class="tab"></div>
+          <div id="tab-items" class="tab" hidden></div>
+          <div id="tab-row" class="tab" hidden></div>
+          <pre id="tab-json" class="tab code" hidden></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+</section>
+
+<section data-v="dash" class="page" hidden>
+  <div class="ph"><div><h2>Dashboard</h2><p class="muted">Your activity at a glance.</p></div></div>
+  <div class="stats" id="bkp"></div>
+  <div class="two">
+    <div class="card pad"><h3>Scans, last 14 days</h3><div id="bday"></div></div>
+    <div class="card pad"><h3>Confidence of your scans</h3><div id="bconf" class="bars"></div></div>
+  </div>
+  <div class="card" style="overflow-x:auto"><table class="tbl click"><thead><tr><th>Latest scans</th><th>Date</th><th class="r">Total</th><th class="r">Confidence</th></tr></thead><tbody id="brec"></tbody></table></div>
+</section>
+
+<section data-v="hist" class="page" hidden>
+  <div class="ph"><div><h2>History</h2><p class="muted">Every document you extracted while signed in.</p></div><input id="hq" class="search" style="max-width:280px;margin:0" placeholder="Search file name…"></div>
+  <div class="stats" id="hkp"></div>
+  <div class="card" style="overflow-x:auto"><table class="tbl click"><thead><tr><th>Document</th><th>Date</th><th class="r">Fields</th><th class="r">Confidence</th><th class="r">Items</th><th class="r">Total</th><th class="r">Time</th><th></th></tr></thead><tbody id="hbody"></tbody></table></div>
+</section>
+
+<section data-v="data" class="page" hidden>
+  <div class="ph"><div><h2>Dataset</h2><p class="muted">Every scan saved to your account, with its original image and extracted data.</p></div><button id="dexp" class="btn sm">⬇ Export dataset (.zip)</button></div>
+  <div class="stats" id="skp"></div>
+  <div id="sgrid" class="sgrid"></div>
+  <div class="ph" style="margin-top:18px"><div><h3 style="margin:0;font-size:22px">The model behind the extractions</h3><p class="muted">What it was trained on, and how well it performs.</p></div></div>
+  <div class="stats" id="dkp"></div>
+  <div class="two">
+    <div class="card pad"><h3>Accuracy per field (token F1, held-out templates)</h3><div id="dbars" class="bars"></div></div>
+    <div class="card pad"><h3>Training setup</h3><table class="tbl" id="dcfg"></table><h3 style="margin-top:18px">Recognised labels</h3><div id="dcls" class="chips"></div></div>
+  </div>
+  <p class="muted note">Trained on FATURA, a synthetic English invoice dataset: expect lower scores on real-world or French invoices. Table rows and totals are read by layout rules on top of the model.</p>
+</section>
+</div>
+
+<div id="cmd" class="modal" hidden><div class="cmdbox card"><input id="cmdq" class="in" placeholder="Search pages, actions and scans…" autocomplete="off"><ul id="cmdl"></ul></div></div>
+<div id="dov" class="dov" hidden>⇪ Drop invoices anywhere to scan them</div>
+<aside id="drawer" class="drawer"></aside>
+<div id="toast" class="toast"></div>
+<script src="app.js?v=9"></script>
+<script src="shell.js?v=9"></script>
+</body>
+</html>
