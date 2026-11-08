@@ -1,0 +1,7 @@
+# Extra packages for the receipt detector (STEP 1 needs none of them: Pillow, numpy and tqdm are already used by DocuMind).
+# Install in the same environment as the rest (C:\ai_env):  pip install -r requirements-receipts.txt
+# ultralytics brings PyTorch (a big download). Use Colab / Kaggle for training if you have no GPU.
+ultralytics
+pytesseract
+matplotlib
+pandas
