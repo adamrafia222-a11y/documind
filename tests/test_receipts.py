@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from documind.data.prepare_receipts import parse_label, run
+from documind.data.prepare_receipts import DEFAULT_NAMES, LEGACY_NAMES, parse_label, read_names_from_yaml, run
 from documind.inference import receipts
 
 
@@ -46,7 +46,7 @@ def test_prepare_end_to_end(tmp_path):
     _make(src / "val", "v", seed=4)
     _make(src / "test", "t", seed=5)
     _make(src / "test", "leak", seed=2)                         # same picture as train/ok
-    stats = run(src, dst, workers=1, reports_dir=rep)
+    stats = run(src, dst, LEGACY_NAMES, workers=1, reports_dir=rep)          # the older 5-class labelling
     assert stats["splits"]["train"]["images"] == 2              # the unlabeled picture is dropped
     assert max(Image.open(dst / "train" / "images" / "big.jpg").size) <= 1600
     yaml_text = (dst / "data.yaml").read_text(encoding="utf-8")
@@ -58,7 +58,7 @@ def test_prepare_end_to_end(tmp_path):
 
 def test_fields_from_boxes_parsing(monkeypatch):
     texts = {"store": "PANDA MARKET", "date": "تاريخ 30 / 09 / 2022", "total": "إجمالي بعد الخصم 548.98", "receipt_no": "عملية رقم 3347048", "item": "item row"}
-    monkeypatch.setattr(receipts, "ocr_box", lambda img, xyxy, psm=7, pad=4, scale=2.0, lang=None: texts[dets_by_box[tuple(xyxy)]])
+    monkeypatch.setattr(receipts, "ocr_box", lambda img, xyxy, **kw: texts[dets_by_box[tuple(xyxy)]])
     dets = [("store", [0, 0, 10, 10], 0.9), ("date", [0, 20, 10, 30], 0.8), ("total", [0, 40, 10, 50], 0.7), ("total", [0, 41, 10, 51], 0.4),
             ("receipt_no", [0, 60, 10, 70], 0.8), ("item", [0, 90, 10, 100], 0.9), ("item", [0, 80, 10, 90], 0.9)]
     dets_by_box = {tuple(b): n for n, b, _ in dets}
@@ -69,6 +69,70 @@ def test_fields_from_boxes_parsing(monkeypatch):
     assert len(out["items"]) == 2
     texts["total"] = "Total 1 548,98 MAD"                                                  # a space as thousands separator belongs to the amount
     assert receipts.fields_from_boxes(Image.new("RGB", (50, 120)), dets)["total"]["value"] == "1548,98"
+
+
+# ------------------------------------------------------------------------------------------------ generate_receipts.py data (13 classes, images/<split> layout)
+def _make_generator_layout(src: Path) -> None:
+    """what scripts/generate_receipts.py writes: images/<split>/x.jpg, labels/<split>/x.txt and a data.yaml with a flow-style names list."""
+    for k, split in enumerate(("train", "val", "test")):
+        _make(src / "tmp", "x", seed=10 + k, label="0 0.5 0.1 0.4 0.1\n11 0.4 0.8 0.3 0.05\n")
+        (src / "images" / split).mkdir(parents=True, exist_ok=True)
+        (src / "labels" / split).mkdir(parents=True, exist_ok=True)
+        (src / "tmp" / "images" / "x.jpg").replace(src / "images" / split / f"r{k}.jpg")
+        (src / "tmp" / "labels" / "x.txt").replace(src / "labels" / split / f"r{k}.txt")
+    (src / "data.yaml").write_text(f"path: {src}\ntrain: images/train\nnc: {len(DEFAULT_NAMES)}\nnames: {DEFAULT_NAMES}\n", encoding="utf-8")
+
+
+def test_read_names_from_yaml_both_styles(tmp_path):
+    flow = tmp_path / "a.yaml"
+    flow.write_text("path: /x\nnc: 3\nnames: ['store_name', 'date', 'total']\n", encoding="utf-8")
+    block = tmp_path / "b.yaml"
+    block.write_text('path: /x\nnames:\n  0: "store"\n  1: "date"\n  2: "total"\n', encoding="utf-8")
+    assert read_names_from_yaml(flow) == ["store_name", "date", "total"] and read_names_from_yaml(block) == ["store", "date", "total"]
+    assert read_names_from_yaml(tmp_path / "missing.yaml") is None
+
+
+def test_prepare_reads_the_generator_layout_and_its_class_names(tmp_path):
+    src, dst = tmp_path / "raw", tmp_path / "out"
+    _make_generator_layout(src)
+    stats = run(src, dst, workers=1, reports_dir=tmp_path / "rep")
+    assert {s: v["images"] for s, v in stats["splits"].items()} == {"train": 1, "val": 1, "test": 1}
+    assert stats["names"][0] == "store_name" and stats["names"][11] == "total" and len(stats["names"]) == 13
+    yaml_text = (dst / "data.yaml").read_text(encoding="utf-8")
+    assert '0: "store_name"' in yaml_text and '12: "payment_method"' in yaml_text and (dst / "val" / "labels" / "r1.txt").exists()
+
+
+def test_item_rows_are_grouped_on_a_tilted_receipt():
+    """The receipt is rotated: the price (right) of an item sits almost one line lower than its name (left). Rows must still pair up."""
+    import math
+    parts = []
+    for i in range(6):
+        for kind, x in (("item_qty", 30), ("item_name", 60), ("item_price", 380)):
+            y = 100 + 34 * i + math.tan(math.radians(4)) * x                       # 4 degrees of tilt: 380 px to the right = 26 px lower
+            parts.append((kind, [x, y, x + 40, y + 22], 0.9))
+    rows = receipts.group_item_rows(parts)
+    assert len(rows) == 6 and all(set(r) == {"item_qty", "item_name", "item_price"} for r in rows)
+    assert receipts.group_item_rows([]) == []
+
+
+def test_fields_from_boxes_with_the_13_classes(monkeypatch):
+    texts = {"store_name": "SUPERMARCHE ATLAS", "address": "12 Av. Hassan II", "phone": "05 24 11 22 33", "date": "30/09/2025", "time": "14:35",
+             "receipt_number": "3347048", "subtotal": "100,00", "tax": "20,00", "total": "120,00 DH", "payment_method": "Especes"}
+    cells = {"A": "Lait 1L", "q1": "1", "p1": "10,50", "B": "Pain", "q2": "2", "p2": "3,00"}
+    dets = [(n, [0, 10 * i, 10, 10 * i + 8], 0.9) for i, n in enumerate(texts)]
+    dets += [("address", [0, 200, 10, 208], 0.8)]
+    texts_by_box = {tuple(b): texts[n] for n, b, _ in dets if n != "address" or b[1] != 200}
+    texts_by_box[(0, 200, 10, 208)] = "40000 Marrakech"
+    rows = [("item_qty", [0, 300, 10, 310], "q1"), ("item_name", [20, 301, 90, 311], "A"), ("item_price", [300, 300, 340, 310], "p1"),
+            ("item_name", [20, 340, 90, 350], "B"), ("item_qty", [0, 341, 10, 351], "q2"), ("item_price", [300, 340, 340, 350], "p2")]
+    for n, b, key in rows:
+        dets.append((n, b, 0.85)); texts_by_box[tuple(b)] = cells[key]
+    monkeypatch.setattr(receipts, "ocr_box", lambda img, xyxy, **kw: texts_by_box[tuple(xyxy)])
+    out = receipts.fields_from_boxes(Image.new("RGB", (400, 400)), dets)
+    assert out["store"]["value"] == "SUPERMARCHE ATLAS" and out["receipt_no"]["value"] == "3347048" and out["date"]["value"] == "30/09/2025"
+    assert out["time"]["value"] == "14:35" and out["total"]["value"] == "120,00" and out["subtotal"]["value"] == "100,00" and out["tax"]["value"] == "20,00"
+    assert out["address"]["value"] == "12 Av. Hassan II, 40000 Marrakech" and out["payment_method"]["value"] == "Especes"
+    assert [(i["qty"], i["description"], i["amount"]) for i in out["items"]] == [("1", "Lait 1L", "10,50"), ("2", "Pain", "3,00")]
 
 
 # ------------------------------------------------------------------------------------------------ evaluation helpers (no model needed)

@@ -9,8 +9,12 @@ const color = l => `hsl(${hue(l)} 70% 55%)`;
 const toast = m => { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("on"), 2000); };
 const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
 const download = (name, text, type) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 500); };
-const csv = rows => {
-  const keys = [...new Set([...(S.cols.length ? ["file", ...S.cols.filter(c => c !== "file")] : ["file"]), ...rows.flatMap(r => Object.keys(r))])];
+const TYPE_LABEL = { invoice: "Invoice", receipt: "Receipt" }, TYPE_CSV = { invoice: "invoices.csv", receipt: "receipts.csv" };
+const typeOf = r => (r && r.doc_type) || "invoice";
+const badge = t => `<span class="tbadge ${esc(t)}">${esc(TYPE_LABEL[t] || t)}</span>`;
+const csv = (rows, cols) => {          // cols = the columns of the document type of these rows (result.columns); never mix types in one call
+  const base = cols && cols.length ? cols : (S.cols.length ? ["file", ...S.cols.filter(c => c !== "file")] : ["file"]);
+  const keys = [...new Set([...base, ...rows.flatMap(r => Object.keys(r))])];
   const q = v => { v = v == null ? "" : String(v); return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   return "\ufeff" + [keys.join(","), ...rows.map(r => keys.map(k => q(r[k])).join(","))].join("\r\n");
 };
@@ -23,8 +27,9 @@ async function ping() {
   const p = $("#health"), t = $("span", p);
   try {
     const h = await (await fetch(S.api + "/health")).json();
-    p.className = "pill" + (h.model_present ? "" : " warn"); t.textContent = h.model_present ? "API online · model ready" : "API online · model missing";
-    if (h.model_present && !S.cols.length) { try { S.cols = (await (await fetch(S.api + "/model")).json()).columns || []; } catch { } }
+    const m = h.models || { invoice: h.model_present }, ready = Object.keys(m).filter(k => m[k]);
+    p.className = "pill" + (ready.length ? "" : " warn"); t.textContent = ready.length ? "API online · " + ready.join(" + ") + " ready" : "API online · model missing";
+    if (h.model_present && !S.cols.length && (!h.models || h.models.invoice)) { try { S.cols = (await (await fetch(S.api + "/model")).json()).columns || []; } catch { } }
   } catch { p.className = "pill off"; t.textContent = "API offline"; }
 }
 
@@ -45,7 +50,7 @@ async function run() {
     const t0 = performance.now();
     try {
       const fd = new FormData(); fd.append("file", it.file);
-      const r = await fetch(S.api + "/extract?format=json", { method: "POST", body: fd });
+      const r = await fetch(S.api + "/extract?format=json&doc_type=" + encodeURIComponent(it.forceType || $("#dtype").value), { method: "POST", body: fd });
       if (!r.ok) { let d = r.statusText; try { d = (await r.json()).detail || d; } catch { } throw new Error(d); }
       it.result = await r.json(); it.ms = performance.now() - t0; it.status = "done";
     } catch (e) { it.status = "error"; it.error = e.message === "Failed to fetch" ? "Cannot reach the backend at " + S.api : e.message; }
@@ -62,8 +67,9 @@ function renderQueue() {
   S.items.forEach((it, i) => {
     const li = document.createElement("li"); li.className = "item" + (i === S.sel ? " on" : "");
     const lab = { queued: "queued", running: "reading…", done: (it.result?.fields.length ?? 0) + " fields", error: "failed" }[it.status];
+    const tb = it.status === "done" ? badge(typeOf(it.result)) : "";
     li.innerHTML = `<div class="thumb" style="${it.url ? `background-image:url(${it.url})` : ""}">${it.url ? "" : "PDF"}</div>
-      <div class="nm"><b>${esc(it.file.name)}</b><small>${kb(it.file.size)}</small></div><span class="st ${it.status}">${lab}</span>`;
+      <div class="nm"><b>${esc(it.file.name)}</b><small>${kb(it.file.size)}${tb}</small></div><span class="st ${it.status}">${lab}</span>`;
     li.onclick = () => select(i); q.append(li);
   });
   $("#count").textContent = S.items.length; $("#empty").hidden = !!S.items.length;
@@ -83,8 +89,16 @@ function renderResult() {
   const r = it.result, F = r.fields || [], avg = F.length ? F.reduce((a, f) => a + (f.confidence || 0), 0) / F.length : 0;
   $("#stats").innerHTML = [["Fields found", F.length], ["Avg. confidence", Math.round(avg * 100) + "%"], ["Line items", (r.items || []).length], ["Time", (it.ms / 1000).toFixed(1) + " s"]]
     .map(([a, b]) => `<div class="stat"><small>${a}</small><b>${b}</b></div>`).join("");
+  drawTypeBar(it);
   const wn = r.warnings || []; $("#warn").hidden = !wn.length; $("#warn").innerHTML = wn.map(x => "⚠ " + esc(x.message)).join("<br>");
   drawStage(it, F); drawTabs(it, F);
+}
+function drawTypeBar(it) {
+  const r = it.result, t = typeOf(r), auto = r.doc_type_source === "auto", conf = r.routing ? Math.round(r.routing.confidence * 100) : null;
+  const other = t === "invoice" ? "receipt" : "invoice";
+  $("#typebar").innerHTML = `${badge(t)}<span class="muted">${auto ? "detected automatically" + (conf != null ? " · " + conf + "% sure" : "") : "chosen by you"}</span>` +
+    `<button class="ghost" id="retype">Read as ${TYPE_LABEL[other].toLowerCase()} instead</button>`;
+  $("#retype").onclick = () => { it.forceType = other; it.status = "queued"; it.result = null; renderQueue(); renderResult(); run(); };
 }
 function drawStage(it, F) {
   const stage = $("#stage");
@@ -145,12 +159,17 @@ addEventListener("paste", e => { const f = [...(e.clipboardData?.files || [])]; 
 $$(".tabs button").forEach(b => b.onclick = () => { $$(".tabs button").forEach(x => x.classList.toggle("on", x === b)); S.tab = b.dataset.tab;
   ["fields", "items", "row", "json"].forEach(t => $("#tab-" + t).hidden = t !== S.tab); $("#q").hidden = S.tab !== "fields"; });
 $("#q").oninput = () => { const it = S.items[S.sel]; if (it?.result) drawTabs(it, it.result.fields); };
-$("#csvOne").onclick = () => { const it = S.items[S.sel]; if (it?.result) download(it.file.name.replace(/\.[^.]+$/, "") + ".csv", csv([it.result.row]), "text/csv"); };
+$("#csvOne").onclick = () => { const it = S.items[S.sel]; if (it?.result) download(it.file.name.replace(/\.[^.]+$/, "") + ".csv", csv([it.result.row], it.result.columns), "text/csv"); };
 $("#csvItems").onclick = () => { const it = S.items[S.sel], M = it?.result?.items || []; if (!M.length) return toast("No line items on this document");
-  const decl = it.result.items_check?.columns || [{ key: "qty" }, { key: "description" }, { key: "unit_price" }, { key: "amount" }];
+  const decl = it.result.items_check?.columns || (typeOf(it.result) === "receipt" ? [{ key: "qty" }, { key: "description" }, { key: "amount" }] : [{ key: "qty" }, { key: "description" }, { key: "unit_price" }, { key: "amount" }]);
   const keys = ["file", "line", ...decl.map(c => c.key).filter(k => M.some(m => (m[k] || "") !== "") || ["description", "amount"].includes(k))];
   download(it.file.name.replace(/\.[^.]+$/, "") + "_items.csv", csv2(keys, M.map((m, j) => ({ file: it.file.name, line: j + 1, ...m }))), "text/csv"); };
-$("#csvAll").onclick = () => download("extractions.csv", csv(S.items.filter(i => i.status === "done").map(i => i.result.row)), "text/csv");
+$("#csvAll").onclick = () => {   // one CSV per document type: invoices.csv and receipts.csv are never merged
+  const groups = {}; S.items.filter(i => i.status === "done").forEach(i => (groups[typeOf(i.result)] ||= []).push(i.result));
+  const types = Object.keys(groups); if (!types.length) return;
+  types.forEach((t, k) => setTimeout(() => download(TYPE_CSV[t] || t + ".csv", csv(groups[t].map(r => r.row), groups[t][0].columns), "text/csv"), k * 350));
+  toast(types.length > 1 ? `${types.length} files: ` + types.map(t => TYPE_CSV[t] || t + ".csv").join(" + ") : "Downloaded " + (TYPE_CSV[types[0]] || types[0] + ".csv"));
+};
 $("#jsonCopy").onclick = () => { const it = S.items[S.sel]; if (it?.result) copy(JSON.stringify(it.result, null, 2)); };
 $("#clear").onclick = () => { S.items.forEach(i => i.url && URL.revokeObjectURL(i.url)); S.items = []; S.sel = -1; renderQueue(); renderResult(); progress(); };
 const api = $("#api"); api.value = S.api;

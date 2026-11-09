@@ -1,30 +1,35 @@
 """STEP 1 (receipts) - clean the YOLO receipt dataset: data/raw/receipts  ->  data/processed/receipts_yolo
 
-Raw layout (YOLO format, labels are `class x_center y_center width height`, all 0..1):
-    data/raw/receipts/{train,val,test}/images/*.jpg      data/raw/receipts/{train,val,test}/labels/*.txt
+Two raw layouts are understood (found automatically; labels are `class x_center y_center width height`, all 0..1):
+    A) generate_receipts.py (scripts/generate_receipts.py):   <data>/images/{train,val,test}/*.jpg    <data>/labels/{train,val,test}/*.txt   + <data>/data.yaml
+    B) one folder per split:                                  <data>/{train,val,test}/images/*.jpg    <data>/{train,val,test}/labels/*.txt
 
-    python -m documind.data.prepare_receipts                       # default folders from documind/config.py
-    python -m documind.data.prepare_receipts --workers 4 --max-side 1100
+    python scripts/generate_receipts.py --n 10000 --out data/raw/receipts          # make the dataset (13 classes)
+    python -m documind.data.prepare_receipts                                       # default folders from documind/config.py
+    python -m documind.data.prepare_receipts --data receipt_dataset --workers 4
 
 What it does (the raw data is never modified):
   1. pairs every picture with its label file and reports pictures without label / labels without picture
   2. checks every label line (class id, numbers in 0..1, box inside the picture), fixes what can be fixed
      (small overflow clipped, polygon -> box, duplicate lines removed) and drops what cannot (reported)
   3. straightens phone pictures (EXIF rotation baked into the pixels), converts to RGB JPEG and shrinks pictures larger than
-     --max-side (labels are normalised, so they stay valid): a 4 MB phone photo becomes about 300 KB, training gets much faster
+     --max-side (labels are normalised, so they stay valid)
   4. detects the same picture in two splits (leakage: it makes the test score look better than it is)
   5. writes data/processed/receipts_yolo/{train,val,test}/{images,labels} + data.yaml (read by YOLO), and in reports/:
      receipts_prepare_report.txt, receipts_stats.json and receipts_preview/*.png (pictures with their boxes drawn: LOOK AT THEM)
 
-Class ids -> names, read from the example picture: 0 store/logo, 1 date, 2 total, 3 receipt number, 4 item rows.
-Change them with --names if other pictures show something else.
+Class names: --names if given, else the `names` of <data>/data.yaml (written by generate_receipts.py), else the 13 classes of
+generate_receipts.py:  store_name, address, phone, date, time, receipt_number, item_name, item_qty, item_price, subtotal, tax, total, payment_method.
+(The older 5-class data: --names store,date,total,receipt_no,item)
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import random
+import re
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -38,10 +43,47 @@ from ..config import PROCESSED_DIR, RAW_DIR, REPORTS_DIR
 
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 SPLITS = ("train", "val", "test")
-DEFAULT_NAMES = ["store", "date", "total", "receipt_no", "item"]
+DEFAULT_NAMES = ["store_name", "address", "phone", "date", "time", "receipt_number", "item_name", "item_qty", "item_price", "subtotal", "tax", "total", "payment_method"]
+LEGACY_NAMES = ["store", "date", "total", "receipt_no", "item"]               # the first 5-class labelling
 PALETTE = [(255, 59, 48), (52, 199, 89), (10, 132, 255), (255, 159, 10), (191, 90, 242), (0, 199, 190), (255, 45, 85), (162, 132, 94)]
-DEFAULT_SRC = RAW_DIR / "receipts"
+def find_raw_receipts(raw_dir: Path = RAW_DIR) -> Path:
+    """First usual folder name that contains a dataset (either raw layout)."""
+    for name in ("receipts", "receipt_dataset"):
+        p = raw_dir / name
+        if (p / "images").is_dir() or (p / "train" / "images").is_dir():
+            return p
+    return raw_dir / "receipts"      # nothing found: the error message will name this path
+
+
+DEFAULT_SRC = find_raw_receipts()
 DEFAULT_DST = PROCESSED_DIR / "receipts_yolo"
+
+
+# ------------------------------------------------------------------------------------------------ layout and names
+def read_names_from_yaml(path: Path) -> list[str] | None:
+    """Class names of a YOLO data.yaml ('names: [a, b]' or the block form '  0: a'), without PyYAML. None when not found."""
+    if not Path(path).is_file():
+        return None
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"^names\s*:\s*(\[.*\])\s*$", text, re.M)
+    if m:
+        try:
+            return [str(n) for n in ast.literal_eval(m.group(1))]
+        except (ValueError, SyntaxError):
+            return None
+    block = re.search(r"^names\s*:\s*\n((?:[ \t]+\S.*\n?)+)", text, re.M)
+    if block:
+        pairs = re.findall(r"^[ \t]+(\d+)\s*:\s*(.+?)\s*$", block.group(1), re.M)
+        if pairs:
+            return [n.strip().strip("'\"") for _, n in sorted(pairs, key=lambda t: int(t[0]))]
+    return None
+
+
+def split_folders(src: Path, split: str) -> tuple[Path, Path]:
+    """(pictures folder, labels folder) of a split, whichever layout the raw data uses (B: <split>/images first, then A: images/<split>)."""
+    b = (src / split / "images", src / split / "labels")
+    a = (src / "images" / split, src / "labels" / split)
+    return b if b[0].is_dir() or not a[0].is_dir() else a
 
 
 # ------------------------------------------------------------------------------------------------ labels
@@ -147,14 +189,16 @@ def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] 
         min_side: float = 0.002, unlabeled: str = "drop", ignore_exif: bool = False, workers: int = 4, preview: int = 6, seed: int = 0,
         reports_dir: Path = REPORTS_DIR) -> dict:
     src, dst, reports_dir = Path(src), Path(dst), Path(reports_dir)
-    names = {i: n.strip() for i, n in enumerate(names_list or DEFAULT_NAMES)}
+    from_yaml = read_names_from_yaml(src / "data.yaml") if not names_list else None
+    names = {i: n.strip() for i, n in enumerate(names_list or from_yaml or DEFAULT_NAMES)}
+    print(f"Class names ({'--names' if names_list else 'data.yaml of the raw data' if from_yaml else 'default'}): {list(names.values())}")
     report: list[str] = []
     jobs: list[dict] = []
     missing_label, orphan_label = defaultdict(list), defaultdict(list)
     for split in SPLITS:
-        idir, ldir = src / split / "images", src / split / "labels"
+        idir, ldir = split_folders(src, split)
         if not idir.is_dir():
-            report.append(f"[{split}] no images folder: {idir}  (split skipped)")
+            report.append(f"[{split}] no images folder: {idir}  (split skipped; expected <data>/images/<split> or <data>/<split>/images)")
             continue
         (dst / split / "images").mkdir(parents=True, exist_ok=True)
         (dst / split / "labels").mkdir(parents=True, exist_ok=True)
@@ -179,7 +223,7 @@ def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] 
                          "dst_lbl": str(dst / split / "labels" / f"{stem}.txt")})
         orphan_label[split] = sorted(set(labels) - used - {p.stem for p in idir.iterdir()})
     if not jobs:
-        raise SystemExit(f"Nothing to do: expected pictures in {src}/train/images, {src}/val/images ... (see the module docstring)")
+        raise SystemExit(f"Nothing to do: expected pictures in {src}/images/train or {src}/train/images ... (see the module docstring)")
 
     t0 = time.time()
     print(f"Processing {len(jobs)} pictures with {workers} worker(s) ...")
@@ -218,7 +262,7 @@ def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] 
             "median_box_wh": {names.get(c, f"class_{c}"): [round(float(np.median([b[3] for r in rs for b in r["boxes"] if b[0] == c])), 4),
                                                            round(float(np.median([b[4] for r in rs for b in r["boxes"] if b[0] == c])), 4)] for c in sorted(cls)}}
     found = sorted({b[0] for r in ok for b in r["boxes"]})
-    top = max(max(found, default=-1), len(DEFAULT_NAMES) - 1, len(names) - 1)
+    top = max(max(found, default=-1), len(names) - 1)
     for c in range(top + 1):
         names.setdefault(c, f"class_{c}")
     train_cls = {b[0] for r in ok if r["split"] == "train" for b in r["boxes"]}
@@ -262,9 +306,9 @@ def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", default=str(DEFAULT_SRC), help="raw dataset: <data>/{train,val,test}/{images,labels}  (default: data/raw/receipts)")
+    ap.add_argument("--data", default=str(DEFAULT_SRC), help="raw dataset: <data>/images/<split> + <data>/labels/<split> (generate_receipts.py) or <data>/<split>/{images,labels}  (default: data/raw/receipts, else data/raw/receipt_dataset)")
     ap.add_argument("--out", default=str(DEFAULT_DST), help="cleaned dataset (default: data/processed/receipts_yolo)")
-    ap.add_argument("--names", default=",".join(DEFAULT_NAMES), help="class names in id order, comma separated")
+    ap.add_argument("--names", default=None, help="class names in id order, comma separated (default: the names of <data>/data.yaml, else the 13 generate_receipts.py classes)")
     ap.add_argument("--max-side", type=int, default=1100, help="longest side in pixels after resizing (1100 for imgsz 960; use 1400 for imgsz 1280)")
     ap.add_argument("--quality", type=int, default=92)
     ap.add_argument("--min-side", type=float, default=0.002, help="drop boxes thinner than this fraction of the picture")
@@ -274,7 +318,7 @@ def main() -> None:
     ap.add_argument("--preview", type=int, default=6, help="pictures drawn with their boxes per split (saved in reports/receipts_preview)")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
-    run(Path(a.data), Path(a.out), a.names.split(","), a.max_side, a.quality, a.min_side, a.unlabeled, a.ignore_exif, a.workers, a.preview, a.seed)
+    run(Path(a.data), Path(a.out), a.names.split(",") if a.names else None, a.max_side, a.quality, a.min_side, a.unlabeled, a.ignore_exif, a.workers, a.preview, a.seed)
 
 
 if __name__ == "__main__":

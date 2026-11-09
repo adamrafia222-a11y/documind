@@ -25,8 +25,11 @@ def q(sql: str, args: tuple = ()):
     c.row_factory = sqlite3.Row
     try:
         c.executescript(_SCHEMA)
-        if "img" not in {r[1] for r in c.execute("PRAGMA table_info(history)")}:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(history)")}
+        if "img" not in cols:
             c.execute("ALTER TABLE history ADD COLUMN img TEXT")
+        if "doc_type" not in cols:
+            c.execute("ALTER TABLE history ADD COLUMN doc_type TEXT DEFAULT 'invoice'")
         cur = c.execute(sql, args)
         rows = cur.fetchall()
         c.commit()
@@ -109,8 +112,9 @@ def save_history(user: dict | None, result: dict, ms: int, data: bytes | None = 
     F = result.get("fields", [])
     total = next((f["text"] for f in F if f["label"] == "TOTAL"), "")
     conf = sum(f.get("confidence", 0) for f in F) / len(F) if F else 0.0
-    _, hid = q("INSERT INTO history(user_id,file,created,n_fields,conf,n_items,total,ms,result) VALUES(?,?,?,?,?,?,?,?,?)",
-               (user["id"], result.get("file", "document"), time.time(), len(F), conf, len(result.get("items", [])), total, ms, json.dumps(result)))
+    _, hid = q("INSERT INTO history(user_id,file,created,n_fields,conf,n_items,total,ms,result,doc_type) VALUES(?,?,?,?,?,?,?,?,?,?)",
+               (user["id"], result.get("file", "document"), time.time(), len(F), conf, len(result.get("items", [])), total, ms, json.dumps(result),
+                result.get("doc_type", "invoice")))
     if data:
         ext = re.sub(r"[^a-z0-9.]", "", Path(result.get("file", "")).suffix.lower())[:6] or ".bin"
         path = SCANS / str(user["id"]) / f"{hid}{ext}"
@@ -121,7 +125,7 @@ def save_history(user: dict | None, result: dict, ms: int, data: bytes | None = 
 
 @router.get("/history")
 def history(user=Depends(current_user)):
-    rows, _ = q("SELECT id,file,created,n_fields,conf,n_items,total,ms,img IS NOT NULL AS has_img FROM history WHERE user_id=? ORDER BY id DESC LIMIT 300", (user["id"],))
+    rows, _ = q("SELECT id,file,created,n_fields,conf,n_items,total,ms,COALESCE(doc_type,'invoice') AS doc_type,img IS NOT NULL AS has_img FROM history WHERE user_id=? ORDER BY id DESC LIMIT 300", (user["id"],))
     return [dict(r) for r in rows]
 
 
@@ -155,9 +159,10 @@ def scan_image(hid: int, user=Depends(current_user)):
 
 @router.get("/dataset/export")
 def dataset_export(user=Depends(current_user)):
-    """The signed-in user's scans as a dataset: images/ + dataset.jsonl (fields, items) + dataset.csv (one row per scan)."""
-    rows, _ = q("SELECT id,file,created,img,result FROM history WHERE user_id=? ORDER BY id", (user["id"],))
-    buf, table = io.BytesIO(), []
+    """The signed-in user's scans as a dataset: images/ + dataset.jsonl (fields, items, doc_type) + ONE csv PER TYPE
+    (dataset_invoices.csv, dataset_receipts.csv): the columns of different document types are never mixed in one file."""
+    rows, _ = q("SELECT id,file,created,img,result,COALESCE(doc_type,'invoice') AS doc_type FROM history WHERE user_id=? ORDER BY id", (user["id"],))
+    buf, tables = io.BytesIO(), {}
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         lines = []
         for r in rows:
@@ -165,14 +170,16 @@ def dataset_export(user=Depends(current_user)):
             if r["img"] and Path(r["img"]).exists():
                 name = f"images/{r['id']}_{re.sub(r'[^A-Za-z0-9._-]', '_', r['file'])}"
                 z.write(r["img"], name)
-            lines.append(json.dumps({"id": r["id"], "file": r["file"], "image": name, "created": r["created"], "fields": res.get("fields", []), "items": res.get("items", [])}, ensure_ascii=False))
-            table.append({"id": r["id"], "image": name or "", **res.get("row", {})})
+            lines.append(json.dumps({"id": r["id"], "doc_type": r["doc_type"], "file": r["file"], "image": name, "created": r["created"],
+                                     "fields": res.get("fields", []), "items": res.get("items", [])}, ensure_ascii=False))
+            tables.setdefault(r["doc_type"], []).append({"id": r["id"], "image": name or "", **res.get("row", {})})
         z.writestr("dataset.jsonl", "\n".join(lines))
-        keys = list(dict.fromkeys(k for t in table for k in t))
-        out = io.StringIO()
-        w = csv.DictWriter(out, keys, extrasaction="ignore")
-        w.writeheader(); w.writerows(table)
-        z.writestr("dataset.csv", "\ufeff" + out.getvalue())
+        for doc_type, table in tables.items():
+            keys = list(dict.fromkeys(k for t in table for k in t))
+            out = io.StringIO()
+            w = csv.DictWriter(out, keys, extrasaction="ignore")
+            w.writeheader(); w.writerows(table)
+            z.writestr(f"dataset_{doc_type}s.csv", "\ufeff" + out.getvalue())
     return Response(buf.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="documind_dataset.zip"'})
 
 

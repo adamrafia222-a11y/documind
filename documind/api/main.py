@@ -1,7 +1,9 @@
 """FastAPI backend.   Run:  uvicorn documind.api.main:app --reload --port 8000   (docs: http://localhost:8000/docs)"""
 from __future__ import annotations
 
+import io
 import time
+import zipfile
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +13,8 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..config import MAX_UPLOAD_MB, MODEL_PATH
-from ..inference.extractor import FieldExtractor, ModelNotFound
+from ..inference.extractor import ModelNotFound
+from ..inference.service import CSV_NAMES, DocumentService
 from . import accounts
 
 
@@ -28,17 +31,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 app.include_router(accounts.router)
 
-_extractor: FieldExtractor | None = None
-
-
-def get_extractor() -> FieldExtractor:
-    global _extractor
-    if _extractor is None:
-        try:
-            _extractor = FieldExtractor()
-        except ModelNotFound as exc:
-            raise HTTPException(status_code=503, detail=str(exc))
-    return _extractor
+_service = DocumentService()
+DOC_TYPE = Query("auto", pattern="^(auto|invoice|receipt)$", description="auto = the router decides; or force invoice / receipt")
 
 
 async def read_upload(f: UploadFile) -> bytes:
@@ -50,50 +44,85 @@ async def read_upload(f: UploadFile) -> bytes:
     return data
 
 
+def _run(data: bytes, filename: str, doc_type: str) -> dict:
+    try:
+        return _service.extract(data, filename, doc_type)
+    except ModelNotFound as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_present": MODEL_PATH.exists(), "model_loaded": _extractor is not None}
+    av = _service.available()
+    return {"status": "ok", "model_present": any(av.values()), "models": av, "model_loaded": _service.invoice_loaded}
 
 
 @app.get("/model")
 def model_info():
-    ex = get_extractor()
-    return {"classes": ex.classes, "columns": ex.columns, "meta": ex.meta}
+    """Invoice model (classes, columns, meta) at the top level as before, and the CSV columns of every type under `types`."""
+    av = _service.available()
+    out: dict = {"models": av, "types": {}}
+    if av["invoice"]:
+        ex = _run_invoice_model()
+        out.update({"classes": ex.classes, "columns": ex.columns, "meta": ex.meta})
+        out["types"]["invoice"] = {"columns": ex.columns, "csv": CSV_NAMES["invoice"]}
+    if av["receipt"]:
+        out["types"]["receipt"] = {"columns": _service.columns("receipt"), "csv": CSV_NAMES["receipt"]}
+    if not any(av.values()):
+        raise HTTPException(503, "No model is installed yet.")
+    return out
+
+
+def _run_invoice_model():
+    try:
+        return _service.invoice()
+    except ModelNotFound as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/extract")
-async def extract(file: UploadFile = File(...), format: str = Query("json", pattern="^(json|csv)$"),
+async def extract(file: UploadFile = File(...), format: str = Query("json", pattern="^(json|csv)$"), doc_type: str = DOC_TYPE,
                   user=Depends(accounts.user_or_none)):
-    """One image or PDF -> JSON (fields + row) or a one-line CSV."""
-    ex = get_extractor()
+    """One image or PDF -> JSON (fields + row + doc_type) or a one-line CSV that only has the columns of its own type."""
     data = await read_upload(file)
     t0 = time.perf_counter()
     try:
-        result = ex.extract_bytes(data, file.filename or "document")
+        result = _run(data, file.filename or "document", doc_type)
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     accounts.save_history(user, result, int((time.perf_counter() - t0) * 1000), data)
     if format == "csv":
-        return Response(ex.to_csv([result]), media_type="text/csv; charset=utf-8",
-                        headers={"Content-Disposition": 'attachment; filename="extraction.csv"'})
+        return Response(_service.to_csv(result["doc_type"], [result]), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{CSV_NAMES[result["doc_type"]]}"'})
     return result
 
 
 @app.post("/extract/batch")
-async def extract_batch(files: list[UploadFile] = File(...), format: str = Query("csv", pattern="^(json|csv)$")):
-    """Many files -> one CSV with one row per document (the 'pictures to CSV' endpoint)."""
-    ex = get_extractor()
+async def extract_batch(files: list[UploadFile] = File(...), format: str = Query("csv", pattern="^(json|csv)$"), doc_type: str = DOC_TYPE):
+    """Many files -> ONE CSV PER DOCUMENT TYPE (never mixed).
+    format=csv : only one type in the batch -> invoices.csv or receipts.csv;  several types -> extractions.zip with one csv per type.
+    format=json: {"results": [...], "errors": [...], "csv_files": {"invoices.csv": n_rows, ...}}."""
     results, errors = [], []
     for f in files:
         try:
-            results.append(ex.extract_bytes(await read_upload(f), f.filename or "document"))
+            results.append(_run(await read_upload(f), f.filename or "document", doc_type))
         except (ValueError, HTTPException) as exc:
             errors.append({"file": f.filename, "error": getattr(exc, "detail", str(exc))})
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[CSV_NAMES[r["doc_type"]]] = counts.get(CSV_NAMES[r["doc_type"]], 0) + 1
     if format == "json":
-        return {"results": results, "errors": errors}
-    return Response(ex.to_csv(results), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": 'attachment; filename="extractions.csv"',
-                             "X-Errors": str(len(errors))})
+        return {"results": results, "errors": errors, "csv_files": counts}
+    csvs = _service.csv_files(results) if results else {}
+    headers = {"X-Errors": str(len(errors)), "X-Doc-Types": ",".join(sorted({r["doc_type"] for r in results}))}
+    if len(csvs) == 1:
+        name, content = next(iter(csvs.items()))
+        return Response(content, media_type="text/csv; charset=utf-8", headers={**headers, "Content-Disposition": f'attachment; filename="{name}"'})
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, content in csvs.items():
+            z.writestr(name, content)
+    return Response(buf.getvalue(), media_type="application/zip", headers={**headers, "Content-Disposition": 'attachment; filename="extractions.zip"'})
 
 
 # ---- web interface (folder `src/` at the project root): http://localhost:8000/app/ ----

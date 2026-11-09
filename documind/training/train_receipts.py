@@ -1,6 +1,7 @@
 """STEP 2 (receipts) - train the YOLO receipt detector on data/processed/receipts_yolo  ->  models/receipts_yolo.pt
 
-    python -m documind.training.train_receipts                                  # yolo11s, 50 epochs, imgsz 960
+    python -m documind.training.train_receipts                                  # yolo11s, 100 epochs, imgsz 960, target 0.90
+    python -m documind.training.train_receipts --model yolo11m.pt --imgsz 1280 --batch 4   # bigger / more precise (slower)
     python -m documind.training.train_receipts --model yolo11n.pt --epochs 40   # smaller / faster
     python -m documind.training.train_receipts --eval-only                      # re-score models/receipts_yolo.pt on val and test
 
@@ -8,8 +9,10 @@ Needs the extra packages of requirements-receipts.txt (Ultralytics + PyTorch). U
 on a CPU it works but takes hours. Results: reports/receipts_runs/<name>/ (curves, confusion matrix), reports/receipts_report.json
 (precision / recall / mAP per class on val AND test), models/receipts_yolo.pt (the best weights).
 
-Speed: the validation score of the first real run stopped improving after about 45 epochs, so 50 epochs with an early stop after 10
-epochs without progress is enough. If an epoch is slow, open Task Manager > Performance > GPU while it runs: below about 70 %
+Epochs: 100 full epochs, early stopping is OFF (patience = 100). `best.pt` is the best epoch, so the extra epochs cannot make the model worse;
+they only cost time (the first real run, 45 epochs, took 1.85 h on an RTX 3080 laptop: expect about 4 h for 100). Use --patience 20 to stop early.
+Target: after training the val and test scores are compared with --target (default 0.90, on mAP50). The verdict is printed; a miss is never hidden.
+If an epoch is slow, open Task Manager > Performance > GPU while it runs: below about 70 %
 the GPU waits for the data loader: raise --workers, and run STEP 1 with --max-side 1100 (smaller pictures decode faster).
 --fraction 0.3 trains on 30 % of the pictures: use it to compare settings (imgsz, model) in minutes before a full run.
 
@@ -45,7 +48,7 @@ def default_workers() -> int:
     return max(2, min(8, os.cpu_count() or 2))
 
 
-def train(data: Path = DATA_YAML, model: str = "yolo11s.pt", epochs: int = 50, imgsz: int = 960, batch: int = 8, patience: int = 10,
+def train(data: Path = DATA_YAML, model: str = "yolo11s.pt", epochs: int = 100, imgsz: int = 960, batch: int = 8, patience: int = 100,
           name: str = "receipts", device=None, workers: int | None = None, cache=False, fraction: float = 1.0, time: float | None = None) -> Path:
     """Train and return the path of the best weights."""
     YOLO = _yolo()
@@ -97,14 +100,48 @@ def print_rows(rows: list[dict]) -> None:
         print(f"{r['split']:6s}{r['class']:14s}{r['precision']:10.3f}{r['recall']:8.3f}{r['mAP50']:8.3f}{r['mAP50-95']:10.3f}{(f'{fr:12.3f}' if fr is not None else '           -')}")
 
 
+TARGET = 0.90
+METRICS = ("mAP50", "found_rate", "mAP50-95")
+
+
+def check_target(rows: list[dict], target: float = TARGET, metric: str = "mAP50") -> dict:
+    """Compare the ALL rows of val and test with the target. -> {"target", "metric", "reached": bool, "scores": {split: value}, "weakest": {split: (class, value)}}"""
+    scores, weakest = {}, {}
+    for r in rows:
+        v = r.get(metric)
+        if v is None:
+            continue
+        if r["class"] == "ALL":
+            scores[r["split"]] = float(v)
+        elif r["split"] not in weakest or float(v) < weakest[r["split"]][1]:
+            weakest[r["split"]] = (r["class"], float(v))
+    return {"target": target, "metric": metric, "reached": bool(scores) and all(v >= target for v in scores.values()), "scores": scores, "weakest": weakest}
+
+
+def print_verdict(res: dict) -> None:
+    t, m = res["target"], res["metric"]
+    for split, v in res["scores"].items():
+        print(f"  {split:5s} {m} = {v:.3f}   {'OK' if v >= t else f'below the target {t:.2f} by {t - v:.3f}'}")
+    if res["reached"]:
+        print(f"\nTARGET REACHED: {m} >= {t:.2f} on val and test.")
+        print("Careful: val and test come from the same generator as train, so this proves the model learned the generated layouts. "
+              "Try real photos (python -m documind.inference.receipts photo.jpg) before trusting it.")
+        return
+    print(f"\nTARGET NOT REACHED ({m} >= {t:.2f} on val and test). In order of effect:")
+    print("  1. look at the per-class rows above: item_qty / item_price (tiny boxes) are usually the weakest -> --imgsz 1280 (prepare_receipts --max-side 1400)")
+    print("  2. a bigger model:  --model yolo11m.pt --imgsz 1280 --batch 4   (batch 2 on 8 GB of GPU memory if it runs out of memory)")
+    print("  3. more pictures:  python scripts/generate_receipts.py --n 20000 --seed 1   (the labels are exact by construction)")
+    print("  4. hand-labelled pictures only: python -m documind.training.audit_receipts --split val lists missing / wrong labels")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default=str(DATA_YAML))
     ap.add_argument("--model", default="yolo11s.pt", help="yolo11n.pt (fastest) / yolo11s.pt / yolo11m.pt (most accurate). Newer families work the same way.")
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--imgsz", type=int, default=960, help="receipts are tall and the boxes are thin: 960 or 1280 beats the default 640")
     ap.add_argument("--batch", type=int, default=8, help="lower it on 'CUDA out of memory'; -1 lets Ultralytics choose")
-    ap.add_argument("--patience", type=int, default=10)
+    ap.add_argument("--patience", type=int, default=100, help="epochs without progress before stopping; 100 = never stop early with 100 epochs")
     ap.add_argument("--name", default="receipts")
     ap.add_argument("--device", default=None, help="0 (first GPU), cpu ... default: automatic")
     ap.add_argument("--workers", type=int, default=None, help=f"data-loader processes (default: {default_workers()} here)")
@@ -112,12 +149,18 @@ def main() -> None:
     ap.add_argument("--fraction", type=float, default=1.0, help="share of the training pictures to use (0.3 = quick comparison run)")
     ap.add_argument("--time", type=float, default=None, help="training budget in HOURS (overrides --epochs)")
     ap.add_argument("--eval-only", action="store_true", help="skip training, score models/receipts_yolo.pt")
+    ap.add_argument("--target", type=float, default=TARGET, help="score to reach on val AND test (default 0.90)")
+    ap.add_argument("--metric", default="mAP50", choices=METRICS, help="which score the target is checked on")
     a = ap.parse_args()
     if not a.eval_only:
         w = train(Path(a.data), a.model, a.epochs, a.imgsz, a.batch, a.patience, a.name, a.device, a.workers,
                   False if a.cache == "False" else a.cache, a.fraction, a.time)
         print(f"\nBest weights saved: {w}")
-    print_rows(evaluate(MODEL_OUT, Path(a.data), a.imgsz, a.device))
+    rows = evaluate(MODEL_OUT, Path(a.data), a.imgsz, a.device)
+    print_rows(rows)
+    for metric in dict.fromkeys([a.metric, "found_rate"]):          # the strict score and the one closer to what the user sees
+        print(f"\n--- target check on {metric}")
+        print_verdict(check_target(rows, a.target, metric))
     print(f"\nReport: {REPORT_PATH}   curves: {RUNS_DIR / a.name}")
 
 

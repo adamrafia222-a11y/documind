@@ -55,3 +55,9 @@ table{width:100%;border-collapse:collapse}td{padding:7px 9px;border-bottom:1px s
 .items .fix{margin-left:6px;padding:1px 6px;border-radius:99px;font-size:10px;background:rgba(255,180,84,.2);color:var(--warn)}
 .items tfoot td{border-top:2px solid var(--line);font-weight:700}.ok{color:var(--ok)}.bad{color:var(--warn)}
 .warn{margin-bottom:14px;padding:12px 16px;border-radius:12px;border:1px solid rgba(255,180,84,.45);background:rgba(255,180,84,.12);color:var(--warn);line-height:1.5}
+
+/* document types: selector, badges, type bar */
+.typesel{display:flex;align-items:center;gap:10px;margin:10px 0 4px}.typesel label{font-size:12px;color:var(--mu);white-space:nowrap}.typesel select{flex:1;padding:7px 10px}
+.tbadge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:#fff;margin-left:6px;vertical-align:middle}
+.tbadge.invoice{background:hsl(215 70% 52%)}.tbadge.receipt{background:hsl(28 85% 50%)}
+.typebar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px;font-size:13px}.typebar .muted{font-size:12px}.typebar button{padding:4px 10px;font-size:12px}

@@ -4,8 +4,8 @@ mAP counts every predicted box that matches NO label as a mistake. When labels a
 not labelled, only some of the item rows labelled, two plausible totals but only one labelled) a model that does the right thing is
 punished, and the score is capped well below 1. These helpers measure what you really want to know:
 
-  found rate   store / date / total / receipt_no: is the MOST CONFIDENT predicted box of that class on a labelled box (IoU >= 0.5)?
-               item: which share of the labelled item rows is found?
+  found rate   store / date / total / receipt number ... (one box per receipt): is the MOST CONFIDENT predicted box of that class on a labelled box (IoU >= 0.5)?
+               item rows, item name / qty / price, address: which share of the labelled boxes is found?
   suspects     high-confidence predictions that match no label (= probably a MISSING label) and labelled boxes the model
                does not see at all (= probably a WRONG label). See documind.training.audit_receipts.
 
@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SINGLE = ("store", "date", "total", "receipt_no")        # one box per receipt expected; "item" = many rows
+SINGLE = ("store", "store_name", "phone", "date", "time", "receipt_no", "receipt_number", "subtotal", "tax", "total", "payment_method")   # one box per receipt expected;
+# address (2 lines), item, item_name, item_qty and item_price have many boxes: they are scored by the share of labelled boxes found
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 

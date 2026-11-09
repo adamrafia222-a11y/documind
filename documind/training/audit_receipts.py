@@ -4,8 +4,9 @@ Runs models/receipts_yolo.pt on a split and lists
   * MISSING label?  a confident prediction that matches no label (the date IS printed, nobody labelled it)
   * WRONG label?    a labelled box the model does not see at all
 into reports/receipts_audit/<split>_suspects.csv, with the pictures (labels in white, predictions in colour) in
-reports/receipts_audit/<split>/. Fix the labels in the files of data/raw/receipts, run STEP 1 again and train again:
-that is the surest way to raise the score. Do it on val and test too: a score measured on incomplete labels is too low.
+reports/receipts_audit/<split>/. Fix the labels in the files of data/processed/receipts_yolo/<split>/labels (the pictures drawn here come from there; keep a copy first),
+then train again. Do NOT run STEP 1 again afterwards: it rebuilds data/processed from data/raw and overwrites your fixes.
+That is the surest way to raise the score. Do it on val and test too: a score measured on incomplete labels is too low.
 """
 from __future__ import annotations
 

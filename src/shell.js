@@ -61,7 +61,7 @@ function drawHist() {
   const avg = H.rows.length ? H.rows.reduce((a, x) => a + x.conf, 0) / H.rows.length : 0;
   $("#hkp").innerHTML = [["Documents processed", H.rows.length], ["Avg. confidence", Math.round(avg * 100) + "%"], ["Fields extracted", nf(H.rows.reduce((a, x) => a + x.n_fields, 0))], ["Line items", nf(H.rows.reduce((a, x) => a + x.n_items, 0))]]
     .map(([a, b]) => `<div class="stat"><small>${a}</small><b>${b}</b></div>`).join("");
-  $("#hbody").innerHTML = R.map(x => `<tr data-id="${x.id}"><td><b>${esc(x.file)}</b></td><td>${when(x.created)}</td><td class="r">${x.n_fields}</td><td class="r">${Math.round(x.conf * 100)}%</td><td class="r">${x.n_items}</td><td class="r">${esc(x.total || "–")}</td><td class="r">${(x.ms / 1000).toFixed(1)} s</td><td class="r"><button class="ghost" data-del="${x.id}">Delete</button></td></tr>`).join("")
+  $("#hbody").innerHTML = R.map(x => `<tr data-id="${x.id}"><td><b>${esc(x.file)}</b>${badge(x.doc_type || "invoice")}</td><td>${when(x.created)}</td><td class="r">${x.n_fields}</td><td class="r">${Math.round(x.conf * 100)}%</td><td class="r">${x.n_items}</td><td class="r">${esc(x.total || "–")}</td><td class="r">${(x.ms / 1000).toFixed(1)} s</td><td class="r"><button class="ghost" data-del="${x.id}">Delete</button></td></tr>`).join("")
     || '<tr><td colspan="8" class="muted center">Nothing here yet. Extract an invoice in the Workspace and it will appear here.</td></tr>';
 }
 $("#hq").oninput = drawHist;
@@ -75,13 +75,13 @@ async function openRow(id) {
   try {
     const x = await J("/history/" + id), r = x.result, F = r.fields || [], M = r.items || [], base = x.file.replace(/\.[^.]+$/, "");
     const keys = M[0] ? Object.keys(M[0]).filter(k => !["bbox", "page", "_cy", "corrected"].includes(k)) : [];
-    d.innerHTML = `<div class="dh"><div><h3>${esc(x.file)}</h3><small class="muted">${when(x.created)} · ${(x.ms / 1000).toFixed(1)} s</small></div><button class="icon" id="dx" aria-label="Close">✕</button></div>
+    d.innerHTML = `<div class="dh"><div><h3>${esc(x.file)}${badge(typeOf(r))}</h3><small class="muted">${when(x.created)} · ${(x.ms / 1000).toFixed(1)} s</small></div><button class="icon" id="dx" aria-label="Close">✕</button></div>
       <div class="dact"><button class="ghost" id="dcsv">⬇ CSV</button><button class="ghost" id="djson">⬇ JSON</button></div><div id="dimg"></div><h4>Fields (${F.length})</h4>` +
       F.map(f => `<div class="f" style="--c:${color(f.label)}"><span class="chip">${esc(f.label)}</span><span class="v">${esc(f.text)}</span></div>`).join("") +
       (M.length ? `<h4>Line items (${M.length})</h4><div style="overflow-x:auto"><table class="tbl"><thead><tr>${keys.map(k => `<th>${esc(k.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>${M.map(m => `<tr>${keys.map(k => `<td>${esc(m[k] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : "");
     $("#dx").onclick = () => d.classList.remove("on");
     if (x.has_img) blobOf(id).then(bl => { if (bl && bl.type.startsWith("image/")) $("#dimg").innerHTML = `<img alt="scan" style="width:100%;border-radius:12px" src="${URL.createObjectURL(bl)}">`; });
-    $("#dcsv").onclick = () => download(base + ".csv", csv([r.row]), "text/csv");
+    $("#dcsv").onclick = () => download(base + ".csv", csv([r.row], r.columns), "text/csv");
     $("#djson").onclick = () => download(base + ".json", JSON.stringify(r, null, 2), "application/json");
   } catch (e) { d.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
@@ -156,7 +156,7 @@ async function demo(f) {
     const x = await r.json(), F = x.fields || [], M = x.items || [], avg = F.length ? F.reduce((a, q) => a + (q.confidence || 0), 0) / F.length : 0, tot = F.find(q => q.label === "TOTAL");
     dres.innerHTML = `<div class="stats mini">${[["Fields found", F.length], ["Confidence", Math.round(avg * 100) + "%"], ["Line items", M.length], ["Total", tot ? esc(tot.text) : "–"]].map(([a, b]) => `<div class="stat"><small>${a}</small><b>${b}</b></div>`).join("")}</div>
       <div class="big">${F.slice(0, 16).map(q => `<span style="--c:${color(q.label)}"><i>${esc(q.label)}</i>${esc(q.text)}</span>`).join("")}</div>
-      <p class="muted">${M.length ? M.length + " line item" + (M.length > 1 ? "s" : "") + " rebuilt" + (x.items_check?.matches_subtotal ? ' · <span class="ok">✓ matches the subtotal</span>' : "") + " · " : ""}${((performance.now() - t0) / 1000).toFixed(1)} s</p>
+      <p class="muted">${badge(typeOf(x))} ${M.length ? M.length + " line item" + (M.length > 1 ? "s" : "") + " rebuilt" + (x.items_check?.matches_subtotal ? ' · <span class="ok">✓ matches the subtotal</span>' : "") + " · " : ""}${((performance.now() - t0) / 1000).toFixed(1)} s</p>
       <button class="btn sm" id="dsave">Create an account to keep this scan →</button>`;
     $("#dsave").onclick = () => openAuth("register");
   } catch (e) { dres.innerHTML = `<p class="err">${esc(e.message === "Failed to fetch" ? "Cannot reach the backend at " + S.api : e.message)}</p>`; }
@@ -178,7 +178,7 @@ async function loadDash() {
     cnt.map((c, i) => { const h = c ? Math.max(8, Math.round(100 * c / mx)) : 3, x = i * 30 + 4; return `<rect x="${x}" y="${120 - h}" width="22" height="${h}" rx="5" fill="url(#bg1)" opacity="${c ? 1 : .25}"><title>${days[i].toLocaleDateString()}: ${c}</title></rect><text x="${x + 11}" y="139" text-anchor="middle" font-size="9" fill="currentColor" opacity=".6">${days[i].getDate()}</text>${c ? `<text x="${x + 11}" y="${114 - h}" text-anchor="middle" font-size="10" fill="currentColor">${c}</text>` : ""}`; }).join("") + "</svg>";
   $("#bconf").innerHTML = [["90–100%", .9, 2], ["80–90%", .8, .9], ["60–80%", .6, .8], ["Below 60%", -1, .6]].map(([l, lo, hi]) => { const k = R.filter(x => x.conf >= lo && x.conf < hi || (hi === 2 && x.conf >= .9)).length;
     return `<div class="br"><span>${l}</span><i><b style="width:${n ? 100 * k / n : 0}%"></b></i><span>${k}</span></div>`; }).join("");
-  $("#brec").innerHTML = R.slice(0, 6).map(x => `<tr data-id="${x.id}"><td><b>${esc(x.file)}</b></td><td>${when(x.created)}</td><td class="r">${esc(x.total || "–")}</td><td class="r">${Math.round(x.conf * 100)}%</td></tr>`).join("") || '<tr><td colspan="4" class="muted center">No scans yet. Upload an invoice in the Workspace.</td></tr>';
+  $("#brec").innerHTML = R.slice(0, 6).map(x => `<tr data-id="${x.id}"><td><b>${esc(x.file)}</b>${badge(x.doc_type || "invoice")}</td><td>${when(x.created)}</td><td class="r">${esc(x.total || "–")}</td><td class="r">${Math.round(x.conf * 100)}%</td></tr>`).join("") || '<tr><td colspan="4" class="muted center">No scans yet. Upload an invoice in the Workspace.</td></tr>';
 }
 $("#brec").onclick = e => { const tr = e.target.closest("tr[data-id]"); if (tr) openRow(tr.dataset.id); };
 
