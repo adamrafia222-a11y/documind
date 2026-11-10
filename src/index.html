@@ -86,13 +86,13 @@
     <label id="drop" class="drop" tabindex="0">
       <input id="file" type="file" accept="image/*,.pdf" multiple hidden>
       <div class="drop-ico">⇪</div>
-      <b>Drop invoices or receipts here</b>
+      <b>Drop invoices, receipts or cheques here</b>
       <span>or click to browse · JPG, PNG, PDF</span>
     </label>
     <div class="typesel"><label for="dtype">Document type</label>
-      <select id="dtype" class="in" aria-label="Document type"><option value="auto">Auto-detect</option><option value="invoice">Invoice</option><option value="receipt">Receipt</option></select></div>
+      <select id="dtype" class="in" aria-label="Document type"><option value="auto">Auto-detect</option><option value="invoice">Invoice</option><option value="receipt">Receipt</option><option value="cheque">Cheque</option></select></div>
     <div class="queue-head"><h3>Documents <em id="count">0</em></h3>
-      <div><button id="csvAll" class="ghost" disabled title="One CSV per document type (invoices.csv, receipts.csv)">⬇ CSV (per type)</button><button id="clear" class="ghost" disabled>Clear</button></div></div>
+      <div><button id="csvAll" class="ghost" disabled title="One CSV per document type (invoices.csv, receipts.csv, cheques.csv)">⬇ CSV (per type)</button><button id="clear" class="ghost" disabled>Clear</button></div></div>
     <div id="bar" class="bar" hidden><i></i></div>
     <ul id="queue" class="queue"></ul>
     <p id="empty" class="muted center">No document yet. Upload one to see the extracted fields.</p>

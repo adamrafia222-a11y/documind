@@ -74,7 +74,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(receipts, "_model", FakeYolo())
     monkeypatch.setattr(receipts, "model_available", lambda path=receipts.MODEL_PATH: True)
     monkeypatch.setattr(receipts, "ocr_box", lambda img, xyxy, **kw: OCR_TEXT[tuple(int(v) for v in xyxy)])
-    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": True})
+    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": True, "cheque": False})
     monkeypatch.setattr(service.DocumentService, "invoice", lambda self: FakeInvoice())
     monkeypatch.setattr(router, "quick_text", lambda img, max_side=1400: "invoice bill to unit price" if img.shape[0] / img.shape[1] < 1.6 else "cashier merci visa")
     monkeypatch.setattr(accounts, "DATA_DIR", tmp_path)
@@ -148,8 +148,8 @@ def test_history_and_dataset_export_keep_types_apart(client):
 
 
 def test_health_and_missing_receipt_model(client, monkeypatch):
-    assert client.get("/health").json()["models"] == {"invoice": True, "receipt": True}
-    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": False})
+    assert client.get("/health").json()["models"] == {"invoice": True, "receipt": True, "cheque": False}
+    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": False, "cheque": False})
     assert _post(client, "b.png", RECEIPT_PNG).json()["doc_type"] == "invoice"      # only the invoice model exists: everything goes there
     r = _post(client, "b.png", RECEIPT_PNG, params={"doc_type": "receipt"})
     assert r.status_code == 503 and "train_receipts" in r.json()["detail"]

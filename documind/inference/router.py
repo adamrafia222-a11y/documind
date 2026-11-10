@@ -1,10 +1,11 @@
-"""Decide what kind of document a picture / PDF is, so that it goes to the right extractor (and to the right CSV).
+"""Decide what kind of document a picture / PDF is (invoice, receipt or cheque), so that it goes to the right extractor (and to the right CSV).
 
     from documind.inference.router import detect_type
     detect_type(data, "scan.jpg")   # {"doc_type": "receipt", "confidence": 0.84, "scores": {"invoice": 1.0, "receipt": 5.5}, "reason": "..."}
 
 How it decides (cheap and readable, no training needed):
-  * shape of the page: a receipt is a long narrow strip (height / width above ~1.65), an invoice is an A4 / Letter page (about 1.3 - 1.5)
+  * shape of the page: a receipt is a long narrow strip (height / width above ~1.65), an invoice is an A4 / Letter page (about 1.3 - 1.5),
+    a cheque is a wide strip (height / width below ~0.65, 0.44 for 1600 x 700)
   * words found by a quick, low-resolution Tesseract pass: "invoice", "bill to", "unit price", "due date" ... point to an invoice;
     "receipt", "cashier", "change", "visa", "merci" ... point to a receipt (English and French)
 The score of each type is added up; the higher one wins and a tie goes to the invoice model. The web page shows the choice and lets the
@@ -21,7 +22,7 @@ import numpy as np
 from ..config import OCR_LANG, PDF_DPI, TESSERACT_CMD
 from ..preprocessing import decode_image, pdf_to_images
 
-TYPES = ("invoice", "receipt")
+TYPES = ("invoice", "receipt", "cheque")                 # a tie goes to the first one in this list
 
 # (pattern, weight). Patterns are matched as whole words / phrases on the lower-cased text.
 INVOICE_WORDS = [
@@ -36,6 +37,11 @@ RECEIPT_WORDS = [
     (r"tpe", 0.7), (r"esp[èe]ces", 1.0), (r"monnaie", 1.0), (r"rendu", 0.7), (r"terminal", 0.5), (r"transaction", 0.5), (r"customer copy", 1.0),
     (r"bienvenue", 1.0), (r"welcome", 0.7), (r"[àa] bient[ôo]t", 1.0), (r"see you", 0.7), (r"items? sold", 1.0), (r"tendered", 1.0),
 ]
+CHEQUE_WORDS = [
+    (r"ch[eè]que", 2.0), (r"payez contre", 3.0), (r"non endossable", 2.0), (r"[àa] l.?ordre de", 2.0), (r"ordre de", 1.0), (r"montant", 0.5), (r"signature", 0.7),
+    (r"rib", 1.0), (r"iban", 0.7), (r"banque", 0.7), (r"bank", 0.5), (r"pay to the order", 3.0), (r"dirhams?", 0.5), (r"centimes?", 0.5),
+]
+_CHQ = [(re.compile(rf"\b{p}\b"), w) for p, w in CHEQUE_WORDS]
 _INV = [(re.compile(rf"\b{p}\b"), w) for p, w in INVOICE_WORDS]
 _REC = [(re.compile(rf"\b{p}\b"), w) for p, w in RECEIPT_WORDS]
 
@@ -45,15 +51,16 @@ def score_types(text: str, aspect: float) -> dict[str, float]:
     t = (text or "").lower()
     inv = sum(w for rx, w in _INV if rx.search(t))
     rec = sum(w for rx, w in _REC if rx.search(t))
+    chq = sum(w for rx, w in _CHQ if rx.search(t))
     if aspect >= 1.9:
         rec += 3.0
     elif aspect >= 1.65:
         rec += 1.5
-    elif aspect <= 1.0:
-        inv += 1.5                                                # landscape page
+    elif aspect <= 0.65:
+        chq += 3.0                                                # a cheque is a wide strip (about 0.44 = 700 / 1600)
     elif aspect <= 1.5:
-        inv += 1.5                                                # A4 (1.41) / Letter (1.29)
-    return {"invoice": round(inv, 2), "receipt": round(rec, 2)}
+        inv += 1.5                                                # landscape page, A4 (1.41) / Letter (1.29)
+    return {"invoice": round(inv, 2), "receipt": round(rec, 2), "cheque": round(chq, 2)}
 
 
 def _first_page(data: bytes, filename: str) -> np.ndarray:
@@ -89,9 +96,8 @@ def detect_type(data: bytes, filename: str = "document", available: tuple[str, .
     allowed = [t for t in TYPES if t in available] or list(TYPES)
     if len(allowed) == 1:
         return {"doc_type": allowed[0], "confidence": 1.0, "scores": scores, "reason": f"only the {allowed[0]} model is installed"}
-    inv, rec = scores["invoice"], scores["receipt"]
-    doc_type = "receipt" if rec > inv else "invoice"
-    total = inv + rec
-    conf = round(max(inv, rec) / total, 2) if total > 0 else 0.5
+    doc_type = max(allowed, key=lambda t: (scores[t], -TYPES.index(t)))          # highest score; a tie goes to the first type of TYPES
+    total = sum(scores[t] for t in allowed)
+    conf = round(scores[doc_type] / total, 2) if total > 0 else 0.5
     return {"doc_type": doc_type, "confidence": max(conf, 0.5), "scores": scores,
-            "reason": f"page shape {aspect:.2f} (height/width), invoice words {inv}, receipt words {rec}"}
+            "reason": f"page shape {aspect:.2f} (height/width), scores " + ", ".join(f"{t} {scores[t]}" for t in allowed)}

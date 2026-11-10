@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SINGLE = ("store", "store_name", "phone", "date", "time", "receipt_no", "receipt_number", "subtotal", "tax", "total", "payment_method")   # one box per receipt expected;
+SINGLE = ("store", "store_name", "phone", "date", "time", "receipt_no", "receipt_number", "subtotal", "tax", "total", "payment_method",
+          "bank_name", "cheque_number", "amount_words", "payee", "amount_digits", "place", "signature", "account_number", "micr_line")   # one box per picture expected (receipts, cheques);
 # address (2 lines), item, item_name, item_qty and item_price have many boxes: they are scored by the share of labelled boxes found
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 

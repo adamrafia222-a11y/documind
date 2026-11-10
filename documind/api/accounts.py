@@ -110,7 +110,7 @@ def save_history(user: dict | None, result: dict, ms: int, data: bytes | None = 
     if not user:
         return
     F = result.get("fields", [])
-    total = next((f["text"] for f in F if f["label"] == "TOTAL"), "")
+    total = next((f["text"] for f in F if f["label"] in ("TOTAL", "AMOUNT")), "")           # invoices / receipts: TOTAL, cheques: AMOUNT
     conf = sum(f.get("confidence", 0) for f in F) / len(F) if F else 0.0
     _, hid = q("INSERT INTO history(user_id,file,created,n_fields,conf,n_items,total,ms,result,doc_type) VALUES(?,?,?,?,?,?,?,?,?,?)",
                (user["id"], result.get("file", "document"), time.time(), len(F), conf, len(result.get("items", [])), total, ms, json.dumps(result),

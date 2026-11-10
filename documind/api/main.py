@@ -32,7 +32,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.include_router(accounts.router)
 
 _service = DocumentService()
-DOC_TYPE = Query("auto", pattern="^(auto|invoice|receipt)$", description="auto = the router decides; or force invoice / receipt")
+DOC_TYPE = Query("auto", pattern="^(auto|invoice|receipt|cheque)$", description="auto = the router decides; or force invoice / receipt / cheque")
 
 
 async def read_upload(f: UploadFile) -> bytes:
@@ -66,8 +66,9 @@ def model_info():
         ex = _run_invoice_model()
         out.update({"classes": ex.classes, "columns": ex.columns, "meta": ex.meta})
         out["types"]["invoice"] = {"columns": ex.columns, "csv": CSV_NAMES["invoice"]}
-    if av["receipt"]:
-        out["types"]["receipt"] = {"columns": _service.columns("receipt"), "csv": CSV_NAMES["receipt"]}
+    for t in ("receipt", "cheque"):
+        if av[t]:
+            out["types"][t] = {"columns": _service.columns(t), "csv": CSV_NAMES[t]}
     if not any(av.values()):
         raise HTTPException(503, "No model is installed yet.")
     return out

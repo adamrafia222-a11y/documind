@@ -9,7 +9,7 @@ const color = l => `hsl(${hue(l)} 70% 55%)`;
 const toast = m => { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("on"), 2000); };
 const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
 const download = (name, text, type) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 500); };
-const TYPE_LABEL = { invoice: "Invoice", receipt: "Receipt" }, TYPE_CSV = { invoice: "invoices.csv", receipt: "receipts.csv" };
+const TYPE_LABEL = { invoice: "Invoice", receipt: "Receipt", cheque: "Cheque" }, TYPE_CSV = { invoice: "invoices.csv", receipt: "receipts.csv", cheque: "cheques.csv" };
 const typeOf = r => (r && r.doc_type) || "invoice";
 const badge = t => `<span class="tbadge ${esc(t)}">${esc(TYPE_LABEL[t] || t)}</span>`;
 const csv = (rows, cols) => {          // cols = the columns of the document type of these rows (result.columns); never mix types in one call
@@ -95,10 +95,10 @@ function renderResult() {
 }
 function drawTypeBar(it) {
   const r = it.result, t = typeOf(r), auto = r.doc_type_source === "auto", conf = r.routing ? Math.round(r.routing.confidence * 100) : null;
-  const other = t === "invoice" ? "receipt" : "invoice";
+  const others = Object.keys(TYPE_LABEL).filter(k => k !== t);
   $("#typebar").innerHTML = `${badge(t)}<span class="muted">${auto ? "detected automatically" + (conf != null ? " · " + conf + "% sure" : "") : "chosen by you"}</span>` +
-    `<button class="ghost" id="retype">Read as ${TYPE_LABEL[other].toLowerCase()} instead</button>`;
-  $("#retype").onclick = () => { it.forceType = other; it.status = "queued"; it.result = null; renderQueue(); renderResult(); run(); };
+    others.map(o => `<button class="ghost retype" data-t="${o}">Read as ${TYPE_LABEL[o].toLowerCase()} instead</button>`).join("");
+  $$("#typebar .retype").forEach(b => b.onclick = () => { it.forceType = b.dataset.t; it.status = "queued"; it.result = null; renderQueue(); renderResult(); run(); });
 }
 function drawStage(it, F) {
   const stage = $("#stage");

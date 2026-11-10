@@ -16,8 +16,9 @@ from .export import rows_to_csv
 from .extractor import FieldExtractor, ModelNotFound
 from .router import TYPES, detect_type
 
-CSV_NAMES = {"invoice": "invoices.csv", "receipt": "receipts.csv"}
-LABELS = {"invoice": "Invoice", "receipt": "Receipt"}
+CSV_NAMES = {"invoice": "invoices.csv", "receipt": "receipts.csv", "cheque": "cheques.csv"}
+LABELS = {"invoice": "Invoice", "receipt": "Receipt", "cheque": "Cheque"}
+TRAIN_CMD = {"invoice": "python -m documind.training.train", "receipt": "python -m documind.training.train_receipts", "cheque": "python -m documind.training.train_cheques"}
 
 
 class DocumentService:
@@ -26,8 +27,8 @@ class DocumentService:
 
     # ------------------------------------------------------------------ what is installed
     def available(self) -> dict[str, bool]:
-        from . import receipts
-        return {"invoice": Path(MODEL_PATH).exists(), "receipt": receipts.model_available()}
+        from . import cheques, receipts
+        return {"invoice": Path(MODEL_PATH).exists(), "receipt": receipts.model_available(), "cheque": cheques.model_available()}
 
     @property
     def invoice_loaded(self) -> bool:
@@ -42,6 +43,9 @@ class DocumentService:
         if doc_type == "receipt":
             from .receipts import RECEIPT_COLUMNS
             return list(RECEIPT_COLUMNS)
+        if doc_type == "cheque":
+            from .cheques import CHEQUE_COLUMNS
+            return list(CHEQUE_COLUMNS)
         return self.invoice().columns
 
     # ------------------------------------------------------------------ extraction
@@ -50,19 +54,18 @@ class DocumentService:
         routing = None
         if doc_type == "auto":
             if not any(av.values()):
-                raise ModelNotFound("No model is installed. Train the invoice model (python -m documind.training.train) and/or the receipt model "
-                                    "(python -m documind.training.train_receipts).")
+                raise ModelNotFound("No model is installed. Train one: " + "  /  ".join(f"{t}: {c}" for t, c in TRAIN_CMD.items()))
             routing = detect_type(data, filename, [t for t in TYPES if av[t]])
             doc_type = routing["doc_type"]
         if doc_type not in TYPES:
-            raise ValueError(f"Unknown document type '{doc_type}' (use auto, invoice or receipt).")
+            raise ValueError(f"Unknown document type '{doc_type}' (use auto, " + ", ".join(TYPES) + ").")
         if not av[doc_type]:
-            hint = "python -m documind.training.train" if doc_type == "invoice" else "python -m documind.training.train_receipts"
-            raise ModelNotFound(f"The {doc_type} model is not installed. Train it first:  {hint}")
-        if doc_type == "receipt":
-            from . import receipts
+            raise ModelNotFound(f"The {doc_type} model is not installed. Train it first:  {TRAIN_CMD[doc_type]}")
+        if doc_type in ("receipt", "cheque"):
+            from . import cheques, receipts
+            extractor = receipts.extract_receipt_bytes if doc_type == "receipt" else cheques.extract_cheque_bytes
             try:
-                result = receipts.extract_receipt_bytes(data, filename)
+                result = extractor(data, filename)
             except SystemExit as exc:                              # load_model() reports a missing Ultralytics package this way
                 raise ModelNotFound(str(exc))
         else:

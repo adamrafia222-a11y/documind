@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import MODELS_DIR, PROCESSED_DIR, REPORTS_DIR
@@ -34,6 +35,41 @@ DATA_YAML = PROCESSED_DIR / "receipts_yolo" / "data.yaml"
 RUNS_DIR = REPORTS_DIR / "receipts_runs"
 MODEL_OUT = MODELS_DIR / "receipts_yolo.pt"
 REPORT_PATH = REPORTS_DIR / "receipts_report.json"
+
+RECEIPT_AUG = dict(fliplr=0.0, flipud=0.0, mosaic=1.0, close_mosaic=15, degrees=4.0, translate=0.08, scale=0.35, shear=2.0, perspective=0.0005,
+                   hsv_h=0.01, hsv_s=0.5, hsv_v=0.4)
+RECEIPT_HINTS = (
+    "  1. look at the per-class rows above: item_qty / item_price (tiny boxes) are usually the weakest -> --imgsz 1280 (prepare_receipts --max-side 1400)",
+    "  2. a bigger model:  --model yolo11m.pt --imgsz 1280 --batch 4   (batch 2 on 8 GB of GPU memory if it runs out of memory)",
+    "  3. more pictures:  python scripts/generate_receipts.py --n 20000 --seed 1   (the labels are exact by construction)",
+    "  4. hand-labelled pictures only: python -m documind.training.audit_receipts --split val lists missing / wrong labels")
+RECEIPT_REACHED = ("Careful: val and test come from the same generator as train, so this proves the model learned the generated layouts. "
+                   "Try real photos (python -m documind.inference.receipts photo.jpg) before trusting it.")
+
+
+@dataclass
+class Profile:
+    """What changes from one document type to another (receipts / cheques ...): paths, defaults, augmentation, hints. The training code is shared."""
+    kind: str = "receipts"
+    data_yaml: Path = DATA_YAML
+    runs_dir: Path = RUNS_DIR
+    model_out: Path = MODEL_OUT
+    report_path: Path = REPORT_PATH
+    model: str = "yolo11s.pt"
+    epochs: int = 100
+    imgsz: int = 960
+    batch: int = 8
+    patience: int = 100
+    prepare_cmd: str = "python -m documind.data.prepare_receipts"
+    imgsz_help: str = "receipts are tall and the boxes are thin: 960 or 1280 beats the default 640"
+    aug: dict = field(default_factory=lambda: dict(RECEIPT_AUG))
+    hints: tuple = RECEIPT_HINTS
+    reached_note: str = RECEIPT_REACHED
+    doc: str = __doc__ or ""
+
+
+def receipts_profile() -> Profile:
+    return Profile()
 
 
 def _yolo():
@@ -49,28 +85,27 @@ def default_workers() -> int:
 
 
 def train(data: Path = DATA_YAML, model: str = "yolo11s.pt", epochs: int = 100, imgsz: int = 960, batch: int = 8, patience: int = 100,
-          name: str = "receipts", device=None, workers: int | None = None, cache=False, fraction: float = 1.0, time: float | None = None) -> Path:
+          name: str = "receipts", device=None, workers: int | None = None, cache=False, fraction: float = 1.0, time: float | None = None,
+          profile: Profile | None = None) -> Path:
     """Train and return the path of the best weights."""
+    pf = profile or Profile()
     YOLO = _yolo()
     if not Path(data).exists():
-        raise SystemExit(f"{data} not found. Run STEP 1 first:  python -m documind.data.prepare_receipts")
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        raise SystemExit(f"{data} not found. Run STEP 1 first:  {pf.prepare_cmd}")
+    pf.runs_dir.mkdir(parents=True, exist_ok=True)
     yolo = YOLO(model)
     yolo.train(
         data=str(data), epochs=epochs, imgsz=imgsz, batch=batch, patience=patience, device=device,
         workers=workers if workers is not None else default_workers(), cache=cache, fraction=fraction, time=time,
-        project=str(RUNS_DIR), name=name, exist_ok=True, seed=0, cos_lr=True,
-        fliplr=0.0, flipud=0.0, mosaic=1.0, close_mosaic=15,
-        degrees=4.0, translate=0.08, scale=0.35, shear=2.0, perspective=0.0005,
-        hsv_h=0.01, hsv_s=0.5, hsv_v=0.4,
+        project=str(pf.runs_dir), name=name, exist_ok=True, seed=0, cos_lr=True, **pf.aug,
     )
-    best = RUNS_DIR / name / "weights" / "best.pt"
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy(best, MODEL_OUT)
-    return MODEL_OUT
+    best = pf.runs_dir / name / "weights" / "best.pt"
+    pf.model_out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(best, pf.model_out)
+    return pf.model_out
 
 
-def evaluate(weights: Path = MODEL_OUT, data: Path = DATA_YAML, imgsz: int = 960, device=None) -> list[dict]:
+def evaluate(weights: Path = MODEL_OUT, data: Path = DATA_YAML, imgsz: int = 960, device=None, profile: Profile | None = None) -> list[dict]:
     """Score on val and test. `test` was never used for training or for choosing the best epoch: it is the honest number."""
     YOLO = _yolo()
     yolo = YOLO(str(weights))
@@ -88,8 +123,9 @@ def evaluate(weights: Path = MODEL_OUT, data: Path = DATA_YAML, imgsz: int = 960
             p, r, ap50, ap = m.box.class_result(i)
             rows.append({"split": split, "class": yolo.names[int(c)], "precision": float(p), "recall": float(r), "mAP50": float(ap50), "mAP50-95": float(ap),
                          "found_rate": found.get(yolo.names[int(c)], {}).get("found_rate")})
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text(json.dumps({"weights": str(weights), "imgsz": imgsz, "rows": rows}, indent=2), encoding="utf-8")
+    report = (profile or Profile()).report_path
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({"weights": str(weights), "imgsz": imgsz, "rows": rows}, indent=2), encoding="utf-8")
     return rows
 
 
@@ -118,50 +154,51 @@ def check_target(rows: list[dict], target: float = TARGET, metric: str = "mAP50"
     return {"target": target, "metric": metric, "reached": bool(scores) and all(v >= target for v in scores.values()), "scores": scores, "weakest": weakest}
 
 
-def print_verdict(res: dict) -> None:
+def print_verdict(res: dict, hints: tuple | None = None, reached_note: str | None = None) -> None:
     t, m = res["target"], res["metric"]
     for split, v in res["scores"].items():
         print(f"  {split:5s} {m} = {v:.3f}   {'OK' if v >= t else f'below the target {t:.2f} by {t - v:.3f}'}")
     if res["reached"]:
         print(f"\nTARGET REACHED: {m} >= {t:.2f} on val and test.")
-        print("Careful: val and test come from the same generator as train, so this proves the model learned the generated layouts. "
-              "Try real photos (python -m documind.inference.receipts photo.jpg) before trusting it.")
+        print(RECEIPT_REACHED if reached_note is None else reached_note)
         return
     print(f"\nTARGET NOT REACHED ({m} >= {t:.2f} on val and test). In order of effect:")
-    print("  1. look at the per-class rows above: item_qty / item_price (tiny boxes) are usually the weakest -> --imgsz 1280 (prepare_receipts --max-side 1400)")
-    print("  2. a bigger model:  --model yolo11m.pt --imgsz 1280 --batch 4   (batch 2 on 8 GB of GPU memory if it runs out of memory)")
-    print("  3. more pictures:  python scripts/generate_receipts.py --n 20000 --seed 1   (the labels are exact by construction)")
-    print("  4. hand-labelled pictures only: python -m documind.training.audit_receipts --split val lists missing / wrong labels")
+    for h in (RECEIPT_HINTS if hints is None else hints):
+        print(h)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", default=str(DATA_YAML))
-    ap.add_argument("--model", default="yolo11s.pt", help="yolo11n.pt (fastest) / yolo11s.pt / yolo11m.pt (most accurate). Newer families work the same way.")
-    ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--imgsz", type=int, default=960, help="receipts are tall and the boxes are thin: 960 or 1280 beats the default 640")
-    ap.add_argument("--batch", type=int, default=8, help="lower it on 'CUDA out of memory'; -1 lets Ultralytics choose")
-    ap.add_argument("--patience", type=int, default=100, help="epochs without progress before stopping; 100 = never stop early with 100 epochs")
-    ap.add_argument("--name", default="receipts")
+def run_cli(pf: Profile) -> None:
+    ap = argparse.ArgumentParser(description=pf.doc, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data", default=str(pf.data_yaml))
+    ap.add_argument("--model", default=pf.model, help="yolo11n.pt (fastest) / yolo11s.pt / yolo11m.pt (most accurate). Newer families work the same way.")
+    ap.add_argument("--epochs", type=int, default=pf.epochs)
+    ap.add_argument("--imgsz", type=int, default=pf.imgsz, help=pf.imgsz_help)
+    ap.add_argument("--batch", type=int, default=pf.batch, help="lower it on 'CUDA out of memory'; -1 lets Ultralytics choose")
+    ap.add_argument("--patience", type=int, default=pf.patience, help="epochs without progress before stopping (= --epochs: never stop early)")
+    ap.add_argument("--name", default=pf.kind)
     ap.add_argument("--device", default=None, help="0 (first GPU), cpu ... default: automatic")
     ap.add_argument("--workers", type=int, default=None, help=f"data-loader processes (default: {default_workers()} here)")
     ap.add_argument("--cache", default="False", choices=["False", "ram", "disk"], help="keep decoded pictures in RAM / on disk: faster, needs 8-10 GB")
     ap.add_argument("--fraction", type=float, default=1.0, help="share of the training pictures to use (0.3 = quick comparison run)")
     ap.add_argument("--time", type=float, default=None, help="training budget in HOURS (overrides --epochs)")
-    ap.add_argument("--eval-only", action="store_true", help="skip training, score models/receipts_yolo.pt")
+    ap.add_argument("--eval-only", action="store_true", help=f"skip training, score {pf.model_out.name}")
     ap.add_argument("--target", type=float, default=TARGET, help="score to reach on val AND test (default 0.90)")
     ap.add_argument("--metric", default="mAP50", choices=METRICS, help="which score the target is checked on")
     a = ap.parse_args()
     if not a.eval_only:
         w = train(Path(a.data), a.model, a.epochs, a.imgsz, a.batch, a.patience, a.name, a.device, a.workers,
-                  False if a.cache == "False" else a.cache, a.fraction, a.time)
+                  False if a.cache == "False" else a.cache, a.fraction, a.time, profile=pf)
         print(f"\nBest weights saved: {w}")
-    rows = evaluate(MODEL_OUT, Path(a.data), a.imgsz, a.device)
+    rows = evaluate(pf.model_out, Path(a.data), a.imgsz, a.device, profile=pf)
     print_rows(rows)
     for metric in dict.fromkeys([a.metric, "found_rate"]):          # the strict score and the one closer to what the user sees
         print(f"\n--- target check on {metric}")
-        print_verdict(check_target(rows, a.target, metric))
-    print(f"\nReport: {REPORT_PATH}   curves: {RUNS_DIR / a.name}")
+        print_verdict(check_target(rows, a.target, metric), pf.hints, pf.reached_note)
+    print(f"\nReport: {pf.report_path}   curves: {pf.runs_dir / a.name}")
+
+
+def main() -> None:
+    run_cli(Profile())
 
 
 if __name__ == "__main__":

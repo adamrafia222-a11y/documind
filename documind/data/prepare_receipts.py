@@ -46,11 +46,16 @@ SPLITS = ("train", "val", "test")
 DEFAULT_NAMES = ["store_name", "address", "phone", "date", "time", "receipt_number", "item_name", "item_qty", "item_price", "subtotal", "tax", "total", "payment_method"]
 LEGACY_NAMES = ["store", "date", "total", "receipt_no", "item"]               # the first 5-class labelling
 PALETTE = [(255, 59, 48), (52, 199, 89), (10, 132, 255), (255, 159, 10), (191, 90, 242), (0, 199, 190), (255, 45, 85), (162, 132, 94)]
+def has_pictures_in(p: Path) -> bool:
+    """True when the folder looks like a raw dataset (either layout: <p>/images/... or <p>/train/images)."""
+    return (Path(p) / "images").is_dir() or (Path(p) / "train" / "images").is_dir()
+
+
 def find_raw_receipts(raw_dir: Path = RAW_DIR) -> Path:
     """First usual folder name that contains a dataset (either raw layout)."""
     for name in ("receipts", "receipt_dataset"):
         p = raw_dir / name
-        if (p / "images").is_dir() or (p / "train" / "images").is_dir():
+        if has_pictures_in(p):
             return p
     return raw_dir / "receipts"      # nothing found: the error message will name this path
 
@@ -187,10 +192,12 @@ def write_data_yaml(path: Path, dst: Path, names: dict[int, str], splits: list[s
 # ------------------------------------------------------------------------------------------------ main
 def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] | None = None, max_side: int = 1100, quality: int = 92,
         min_side: float = 0.002, unlabeled: str = "drop", ignore_exif: bool = False, workers: int = 4, preview: int = 6, seed: int = 0,
-        reports_dir: Path = REPORTS_DIR) -> dict:
+        reports_dir: Path = REPORTS_DIR, tag: str = "receipts", default_names: list[str] | None = None) -> dict:
+    """`tag` names the reports (<tag>_prepare_report.txt, <tag>_stats.json, <tag>_preview/) and the next command (train_<tag>);
+    `default_names` are used when neither --names nor <src>/data.yaml gives the class names. Both default to receipts."""
     src, dst, reports_dir = Path(src), Path(dst), Path(reports_dir)
     from_yaml = read_names_from_yaml(src / "data.yaml") if not names_list else None
-    names = {i: n.strip() for i, n in enumerate(names_list or from_yaml or DEFAULT_NAMES)}
+    names = {i: n.strip() for i, n in enumerate(names_list or from_yaml or default_names or DEFAULT_NAMES)}
     print(f"Class names ({'--names' if names_list else 'data.yaml of the raw data' if from_yaml else 'default'}): {list(names.values())}")
     report: list[str] = []
     jobs: list[dict] = []
@@ -276,12 +283,12 @@ def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] 
 
     write_data_yaml(dst / "data.yaml", dst, names, [s for s in SPLITS if s in stats["splits"]])
     reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / "receipts_stats.json").write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
+    (reports_dir / f"{tag}_stats.json").write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
     rng = random.Random(seed)
     for split in stats["splits"]:
         for r in rng.sample([r for r in ok if r["split"] == split], min(preview, stats["splits"][split]["images"])):
             draw_preview(dst / split / "images" / f"{r['stem']}.jpg", dst / split / "labels" / f"{r['stem']}.txt", names,
-                         reports_dir / "receipts_preview" / f"{split}_{r['stem']}.png")
+                         reports_dir / f"{tag}_preview" / f"{split}_{r['stem']}.png")
 
     lines = [f"Prepared {len(ok)} pictures in {time.time() - t0:.0f}s -> {dst}", ""]
     for split, s in stats["splits"].items():
@@ -299,26 +306,29 @@ def run(src: Path = DEFAULT_SRC, dst: Path = DEFAULT_DST, names_list: list[str] 
                      + ". The val/test scores would be too good: keep each picture in ONE split.")
     lines += report
     text = "\n".join(lines)
-    (reports_dir / "receipts_prepare_report.txt").write_text(text, encoding="utf-8")
-    print("\n" + text + f"\n\nNext: look at {reports_dir / 'receipts_preview'}, then: python -m documind.training.train_receipts")
+    (reports_dir / f"{tag}_prepare_report.txt").write_text(text, encoding="utf-8")
+    print("\n" + text + f"\n\nNext: look at {reports_dir / (tag + '_preview')}, then: python -m documind.training.train_{tag}")
     return stats
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", default=str(DEFAULT_SRC), help="raw dataset: <data>/images/<split> + <data>/labels/<split> (generate_receipts.py) or <data>/<split>/{images,labels}  (default: data/raw/receipts, else data/raw/receipt_dataset)")
-    ap.add_argument("--out", default=str(DEFAULT_DST), help="cleaned dataset (default: data/processed/receipts_yolo)")
-    ap.add_argument("--names", default=None, help="class names in id order, comma separated (default: the names of <data>/data.yaml, else the 13 generate_receipts.py classes)")
-    ap.add_argument("--max-side", type=int, default=1100, help="longest side in pixels after resizing (1100 for imgsz 960; use 1400 for imgsz 1280)")
+def main(tag: str = "receipts", default_src: Path | None = None, default_dst: Path | None = None, default_names: list[str] | None = None,
+         default_max_side: int = 1100, doc: str | None = None) -> None:
+    default_src, default_dst = default_src or DEFAULT_SRC, default_dst or DEFAULT_DST
+    ap = argparse.ArgumentParser(description=doc or __doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--data", default=str(default_src), help="raw dataset: <data>/images/<split> + <data>/labels/<split> (as written by the generators) or <data>/<split>/{images,labels}  (default: %(default)s)")
+    ap.add_argument("--out", default=str(default_dst), help="cleaned dataset (default: %(default)s)")
+    ap.add_argument("--names", default=None, help="class names in id order, comma separated (default: the names of <data>/data.yaml, else the generator's classes)")
+    ap.add_argument("--max-side", type=int, default=default_max_side, help="longest side in pixels after resizing (the training --imgsz should be about this value / 1.15)")
     ap.add_argument("--quality", type=int, default=92)
     ap.add_argument("--min-side", type=float, default=0.002, help="drop boxes thinner than this fraction of the picture")
     ap.add_argument("--unlabeled", choices=["drop", "keep"], default="drop", help="pictures with no label file: drop them (default) or keep them as background")
     ap.add_argument("--ignore-exif", action="store_true", help="do not apply the EXIF rotation (use if the boxes were drawn on the raw, unrotated pixels)")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1))
-    ap.add_argument("--preview", type=int, default=6, help="pictures drawn with their boxes per split (saved in reports/receipts_preview)")
+    ap.add_argument("--preview", type=int, default=6, help=f"pictures drawn with their boxes per split (saved in reports/{tag}_preview)")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
-    run(Path(a.data), Path(a.out), a.names.split(",") if a.names else None, a.max_side, a.quality, a.min_side, a.unlabeled, a.ignore_exif, a.workers, a.preview, a.seed)
+    run(Path(a.data), Path(a.out), a.names.split(",") if a.names else None, a.max_side, a.quality, a.min_side, a.unlabeled, a.ignore_exif, a.workers, a.preview, a.seed,
+        tag=tag, default_names=default_names)
 
 
 if __name__ == "__main__":

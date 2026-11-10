@@ -104,17 +104,42 @@ or `notebooks/train_receipts_yolo.ipynb`. Tests: `pytest -q tests/test_receipts.
 A model trained on the older 5 classes (store / date / total / receipt_no / item) still loads, but models trained on the 13 classes are needed for the new fields:
 retrain once. `receipts.csv` columns: file, STORE, ADDRESS, PHONE, DATE, TIME, RECEIPT_NO, SUBTOTAL, TAX, TOTAL, PAYMENT, N_ITEMS, ITEMS.
 
-### Several document types in one app (invoice + receipt)
+### Cheques (YOLO detector + checks)
+
+Data: made by `scripts/generate_cheques.py` (10 classes, boxes on the values, exact labels + `ground_truth.jsonl`):
+bank_name, cheque_number, amount_words, payee, amount_digits, place, date, signature, account_number, micr_line.
+```
+python scripts/generate_cheques.py --n 10000 --out data/raw/cheques             # 8000 train / 1000 val / 1000 test  (--currency EUR, --fonts-dir ./handwriting_fonts)
+python -m documind.data.prepare_cheques                    # STEP 1: data/raw/cheques (else data/raw/cheque_dataset) -> data/processed/cheques_yolo
+                                                           #   same checks as the receipts, reports/cheques_prepare_report.txt + reports/cheques_preview/ (LOOK at it)
+python -m documind.training.train_cheques                  # STEP 2: yolo11s, 60 epochs (early stop 15), imgsz 1280, batch 4 -> models/cheques_yolo.pt
+                                                           #   precision / recall / mAP50 / found_rate per class on val AND test (reports/cheques_report.json) + the 0.90 verdict
+python -m documind.inference.cheques cheque.jpg            # STEP 3: fields + checks + the CSV row
+```
+Notebook version of the same steps (GPU check, settings, data look, training, per-class scores on val and test, predictions, the checks on 30 test cheques): `notebooks/train_cheques_yolo.ipynb`.
+
+`prepare_cheques` / `train_cheques` are thin: they reuse the receipt code (`prepare_receipts.run`, `train_receipts.run_cli` with a different `Profile`),
+so both types get the same validation, scores and target check, and neither overwrites the other's reports or weights.
+
+`cheques.csv` columns: file, BANK, CHEQUE_NO, PAYEE, AMOUNT, CURRENCY, AMOUNT_WORDS, PLACE, DATE, ACCOUNT_NO, MICR, SIGNATURE, AMOUNT_CHECK.
+Checks (shown as warnings on the web page, never silently corrected): amount in figures = amount in words (the French words are converted back to a number),
+cheque number = the one in the MICR line, valid date, account number length (24 digits RIB / 23 IBAN), signature found.
+On a sample of generated cheques (true boxes, Tesseract): bank, cheque number, account number and signature 40/40, amount in figures 39/40, date 39/40, payee 35/40,
+amount in words understood on 31/40 (the checker never said "mismatch" for a consistent cheque, and never said "ok" for a wrong amount). Tesseract reads real
+cursive handwriting badly: to read real cheques replace `read_text` in `documind/inference/cheques.py` by a handwriting model (e.g. TrOCR).
+
+### Several document types in one app (invoice + receipt + cheque)
 Each type keeps its own model and its own CSV columns; they are never merged.
 ```
 picture / PDF -> router (page shape + key words, or the type chosen in the web page) -> invoice extractor (LightGBM)  -> invoices.csv
                                                                                     -> receipt extractor (YOLO+OCR) -> receipts.csv
+                                                                                    -> cheque extractor (YOLO+OCR+checks) -> cheques.csv
 ```
-* `POST /extract?doc_type=auto|invoice|receipt` (default `auto`); the answer has `doc_type`, `doc_type_source` (auto / manual), `columns`.
-* `POST /extract/batch` -> one CSV per type: a plain `invoices.csv` / `receipts.csv` if the batch has one type, `extractions.zip` with both if it has two.
-* Web page: "Document type" selector (Auto-detect by default), a type badge on every document, "Read as receipt/invoice instead" if the
-  router guessed wrong, and `CSV (per type)` downloads `invoices.csv` and `receipts.csv` separately. History and the dataset export
-  (`dataset_invoices.csv`, `dataset_receipts.csv`) are split the same way.
+* `POST /extract?doc_type=auto|invoice|receipt|cheque` (default `auto`); the answer has `doc_type`, `doc_type_source` (auto / manual), `columns`.
+* `POST /extract/batch` -> one CSV per type: a plain `invoices.csv` / `receipts.csv` / `cheques.csv` if the batch has one type, `extractions.zip` with one csv per type if it has several.
+* Web page: "Document type" selector (Auto-detect by default), a type badge on every document, "Read as ... instead" if the
+  router guessed wrong, and `CSV (per type)` downloads `invoices.csv`, `receipts.csv` and `cheques.csv` separately. History and the dataset export
+  (`dataset_invoices.csv`, `dataset_receipts.csv`, `dataset_cheques.csv`) are split the same way.
 * A type whose model file is missing is simply not offered: with only the invoice model installed, everything goes to the invoice extractor.
 * New type later (ID card, bank statement ...): write an extractor that returns the same kind of dict and add it in `documind/inference/service.py`.
 
