@@ -1,4 +1,4 @@
-"""Decide what kind of document a picture / PDF is (invoice, receipt or cheque), so that it goes to the right extractor (and to the right CSV).
+"""Decide what kind of document a picture / PDF is (invoice, receipt, cheque or loan contract), so that it goes to the right extractor (and to the right CSV).
 
     from documind.inference.router import detect_type
     detect_type(data, "scan.jpg")   # {"doc_type": "receipt", "confidence": 0.84, "scores": {"invoice": 1.0, "receipt": 5.5}, "reason": "..."}
@@ -15,6 +15,7 @@ by a trained classifier (the rest of the code does not change).
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import cv2
 import numpy as np
@@ -22,7 +23,7 @@ import numpy as np
 from ..config import OCR_LANG, PDF_DPI, TESSERACT_CMD
 from ..preprocessing import decode_image, pdf_to_images
 
-TYPES = ("invoice", "receipt", "cheque")                 # a tie goes to the first one in this list
+TYPES = ("invoice", "receipt", "cheque", "contract")      # a tie goes to the first one in this list
 
 # (pattern, weight). Patterns are matched as whole words / phrases on the lower-cased text.
 INVOICE_WORDS = [
@@ -41,17 +42,26 @@ CHEQUE_WORDS = [
     (r"ch[eè]que", 2.0), (r"payez contre", 3.0), (r"non endossable", 2.0), (r"[àa] l.?ordre de", 2.0), (r"ordre de", 1.0), (r"montant", 0.5), (r"signature", 0.7),
     (r"rib", 1.0), (r"iban", 0.7), (r"banque", 0.7), (r"bank", 0.5), (r"pay to the order", 3.0), (r"dirhams?", 0.5), (r"centimes?", 0.5),
 ]
+# A loan contract is an A4 page like an invoice: the words decide (French, accents are removed from the text before matching: write the patterns without them)
+CONTRACT_WORDS = [
+    (r"contrat", 2.0), (r"preteur", 3.0), (r"emprunteur", 3.0), (r"soussignes", 3.0), (r"il a ete convenu", 3.0), (r"article \d", 1.0), (r"taeg", 2.0),
+    (r"taux (annuel|d.interet|fixe)", 1.5), (r"mensualites?", 2.0), (r"lu et approuve", 3.0), (r"exemplaires originaux", 2.0), (r"capital restant du", 2.0),
+    (r"pret (personnel|immobilier)", 2.0), (r"credit automobile", 2.0), (r"carte nationale d.identite", 2.0), (r"ci.apres denomme", 3.0), (r"d.une part", 2.0),
+    (r"remboursement anticipe", 2.0), (r"decheance du terme", 2.0), (r"droit de retractation", 2.0),
+]
 _CHQ = [(re.compile(rf"\b{p}\b"), w) for p, w in CHEQUE_WORDS]
+_CON = [(re.compile(rf"\b{p}\b"), w) for p, w in CONTRACT_WORDS]
 _INV = [(re.compile(rf"\b{p}\b"), w) for p, w in INVOICE_WORDS]
 _REC = [(re.compile(rf"\b{p}\b"), w) for p, w in RECEIPT_WORDS]
 
 
 def score_types(text: str, aspect: float) -> dict[str, float]:
     """Evidence for each type from the page text (any case) and the page shape (height / width)."""
-    t = (text or "").lower()
+    t = "".join(c for c in unicodedata.normalize("NFKD", (text or "").lower()) if not unicodedata.combining(c))        # accents off: the OCR often drops them
     inv = sum(w for rx, w in _INV if rx.search(t))
     rec = sum(w for rx, w in _REC if rx.search(t))
     chq = sum(w for rx, w in _CHQ if rx.search(t))
+    con = sum(w for rx, w in _CON if rx.search(t))
     if aspect >= 1.9:
         rec += 3.0
     elif aspect >= 1.65:
@@ -60,7 +70,7 @@ def score_types(text: str, aspect: float) -> dict[str, float]:
         chq += 3.0                                                # a cheque is a wide strip (about 0.44 = 700 / 1600)
     elif aspect <= 1.5:
         inv += 1.5                                                # landscape page, A4 (1.41) / Letter (1.29)
-    return {"invoice": round(inv, 2), "receipt": round(rec, 2), "cheque": round(chq, 2)}
+    return {"invoice": round(inv, 2), "receipt": round(rec, 2), "cheque": round(chq, 2), "contract": round(con, 2)}
 
 
 def _first_page(data: bytes, filename: str) -> np.ndarray:

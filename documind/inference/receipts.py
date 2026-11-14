@@ -48,10 +48,10 @@ WHITELIST = {"date": "0123456789/-. ", "time": "0123456789:hH ", "receipt_no": "
              "total": "0123456789,. ", "subtotal": "0123456789,. ", "tax": "0123456789,. ", "item_price": "0123456789,. "}   # characters each field can contain
 
 
-def ocr_box(img: Image.Image, xyxy, psm: int = 7, pad: int = 2, scale: float = 3.0, lang: str | None = None, whitelist: str | None = None) -> str:
-    """Tesseract on one detected box: padded, grey, enlarged, with a white margin (Tesseract misses characters that touch the edge of the crop).
-    `whitelist` limits the characters the box can contain (digits only for a quantity, ...). Small pad (2 px): the boxes of neighbouring values
-    (quantity, " x ", name) are only a few pixels apart, a wider crop reads them too (tested: item quantity + price right 90 % with pad 2, 63 % with pad 6)."""
+def _tesseract_box(img: Image.Image, xyxy, psm: int, pad: int, scale: float, lang: str | None, whitelist: str | None) -> str:
+    """Tesseract on one box: padded, grey, enlarged, with a white margin (Tesseract misses characters that touch the edge of the crop).
+    Small pad (2 px): the boxes of neighbouring values (quantity, " x ", name) are only a few pixels apart, a wider crop reads them too
+    (tested: item quantity + price right 90 % with pad 2, 63 % with pad 6)."""
     import pytesseract
     from PIL import ImageOps
     if TESSERACT_CMD:
@@ -62,6 +62,27 @@ def ocr_box(img: Image.Image, xyxy, psm: int = 7, pad: int = 2, scale: float = 3
     crop = ImageOps.expand(ImageOps.autocontrast(crop, cutoff=1), border=16, fill=255)
     cfg = f"--psm {psm}" + (f" -c tessedit_char_whitelist={whitelist}" if whitelist else "")
     return " ".join(pytesseract.image_to_string(crop, lang=lang or LANG, config=cfg).split())
+
+
+def ocr_box(img: Image.Image, xyxy, psm: int = 7, pad: int = 2, scale: float = 3.0, lang: str | None = None, whitelist: str | None = None,
+            field: str | None = None, prefer=None) -> str:
+    """Text of one detected box. DOCUMIND_OCR chooses the engine:
+         auto (default) / both   the trained recognizer (models/ocr_trocr) AND Tesseract read the box and the better reading is kept
+                                 (documind.ocr.ensemble: same text, cross-check, format of the field, then the trained model); Tesseract alone if no model is installed
+         tesseract               Tesseract only            trocr   the trained recognizer only
+    `whitelist` limits the characters the box can contain (digits only for a quantity, ...), `field` names the kind of value (date, total, iban ...) so that
+    the format of the reading can be checked, `prefer(text) -> bool` is an optional cross-check (the amount in words must be the amount in figures)."""
+    from ..ocr import ensemble, trocr
+    engine = trocr.get_engine()
+    if engine is None:
+        return _tesseract_box(img, xyxy, psm, pad, scale, lang, whitelist)
+    x0, y0, x1, y1 = xyxy
+    crop = img.crop((max(0, int(x0) - 3), max(0, int(y0) - 3), min(img.width, int(x1) + 4), min(img.height, int(y1) + 4)))
+    neural = trocr.filter_chars(engine.read([crop])[0], whitelist)
+    if os.getenv("DOCUMIND_OCR", "auto").lower() == "trocr":
+        return neural
+    classic = _tesseract_box(img, xyxy, psm, pad, scale, lang, whitelist)
+    return ensemble.choose({"trocr": neural, "tesseract": classic}, field=field, whitelist=whitelist, prefer=prefer).text
 
 
 def _union(boxes) -> list[float]:
@@ -142,23 +163,23 @@ def fields_from_boxes(img: Image.Image, dets: list[tuple], lang: str | None = No
             best[name] = (name, xyxy, conf)
     out: dict = {}
     for name, xyxy, conf in best.values():
-        txt = ocr_box(img, xyxy, psm=6 if name == "store" else 7, lang=lang, whitelist=WHITELIST.get(name))
+        txt = ocr_box(img, xyxy, psm=6 if name == "store" else 7, lang=lang, whitelist=WHITELIST.get(name), field=name)
         out[name] = {"value": _parse(name, txt), "raw_text": txt, "box_confidence": round(float(conf), 2), "bbox": [round(float(v), 1) for v in xyxy]}
     if address:
-        lines = [(b, c, ocr_box(img, b, psm=7, lang=lang)) for b, c in sorted(address, key=lambda t: t[0][1])]
+        lines = [(b, c, ocr_box(img, b, psm=7, lang=lang, field="address")) for b, c in sorted(address, key=lambda t: t[0][1])]
         txt = ", ".join(t for _, _, t in lines if t)
         out["address"] = {"value": txt or None, "raw_text": txt, "box_confidence": round(float(max(c for _, c, _ in lines)), 2), "bbox": _union([b for b, _, _ in lines])}
 
     items = []
     for _, b, c in sorted(legacy_items, key=lambda t: t[0]):
-        raw = ocr_box(img, b, psm=7, lang=lang)
+        raw = ocr_box(img, b, psm=7, lang=lang, field="item")
         m = AMOUNT_RE.findall(raw)
         items.append({"raw_text": raw, "description": raw, "qty": "", "amount": m[-1].replace(" ", "") if m else "",
                       "box_confidence": round(float(c), 2), "bbox": [round(float(v), 1) for v in b]})
     for row in group_item_rows(parts):
-        desc = ocr_box(img, row["item_name"][0], psm=7, lang=lang) if "item_name" in row else ""
-        qty_raw = ocr_box(img, row["item_qty"][0], psm=7, scale=2.0, lang=lang, whitelist=WHITELIST.get("item_qty")) if "item_qty" in row else ""
-        price_raw = ocr_box(img, row["item_price"][0], psm=7, scale=2.0, lang=lang, whitelist=WHITELIST.get("item_price")) if "item_price" in row else ""
+        desc = ocr_box(img, row["item_name"][0], psm=7, lang=lang, field="item_name") if "item_name" in row else ""
+        qty_raw = ocr_box(img, row["item_qty"][0], psm=7, scale=2.0, lang=lang, whitelist=WHITELIST.get("item_qty"), field="item_qty") if "item_qty" in row else ""
+        price_raw = ocr_box(img, row["item_price"][0], psm=7, scale=2.0, lang=lang, whitelist=WHITELIST.get("item_price"), field="item_price") if "item_price" in row else ""
         q, a = QTY_RE.search(qty_raw), AMOUNT_RE.findall(price_raw)
         qty, amount = (q.group(0) if q else ""), (a[-1].replace(" ", "") if a else price_raw.replace(" ", ""))
         items.append({"raw_text": " ".join(x for x in (qty_raw, desc, price_raw) if x), "description": desc, "qty": qty, "amount": amount,

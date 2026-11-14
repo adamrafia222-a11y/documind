@@ -96,7 +96,60 @@ def login(b: Login):
 
 @router.get("/auth/me")
 def me(user=Depends(current_user)):
-    return user
+    rows, _ = q("SELECT created FROM users WHERE id=?", (user["id"],))
+    return {**user, "created": rows[0]["created"] if rows else None}
+
+
+class Rename(BaseModel):
+    name: str
+
+
+class Password(BaseModel):
+    current: str
+    new: str
+
+
+class Delete(BaseModel):
+    password: str
+
+
+def _check_password(uid: int, password: str) -> None:
+    rows, _ = q("SELECT salt,pw FROM users WHERE id=?", (uid,))
+    if not rows or not hmac.compare_digest(rows[0]["pw"], _hash(password, rows[0]["salt"])):
+        raise HTTPException(401, "Wrong password")
+
+
+@router.patch("/auth/me")
+def rename(b: Rename, user=Depends(current_user)):
+    name = b.name.strip()
+    if len(name) < 2:
+        raise HTTPException(422, "Enter a name of at least 2 characters")
+    q("UPDATE users SET name=? WHERE id=?", (name, user["id"]))
+    return me({**user, "name": name})
+
+
+@router.post("/auth/password")
+def change_password(b: Password, authorization: str | None = Header(None), user=Depends(current_user)):
+    """Needs the current password. Every OTHER session of the account is closed (a stolen token stops working); the one making the request stays open."""
+    _check_password(user["id"], b.current)
+    if len(b.new) < 8:
+        raise HTTPException(422, "The new password must have at least 8 characters")
+    salt = secrets.token_hex(16)
+    q("UPDATE users SET salt=?, pw=? WHERE id=?", (salt, _hash(b.new, salt), user["id"]))
+    q("DELETE FROM sessions WHERE user_id=? AND token<>?", (user["id"], (authorization or "")[7:].strip()))
+    return {"ok": True}
+
+
+@router.post("/auth/delete")
+def delete_account(b: Delete, user=Depends(current_user)):
+    """Deletes the account, its sessions, its history and the stored scans. Needs the password."""
+    _check_password(user["id"], b.password)
+    for r in q("SELECT img FROM history WHERE user_id=?", (user["id"],))[0]:
+        Path(r["img"] or "").unlink(missing_ok=True)
+    for t in ("history", "sessions"):
+        q(f"DELETE FROM {t} WHERE user_id=?", (user["id"],))
+    q("DELETE FROM users WHERE id=?", (user["id"],))
+    return {"ok": True}
 
 
 @router.post("/auth/logout")
@@ -125,8 +178,16 @@ def save_history(user: dict | None, result: dict, ms: int, data: bytes | None = 
 
 @router.get("/history")
 def history(user=Depends(current_user)):
-    rows, _ = q("SELECT id,file,created,n_fields,conf,n_items,total,ms,COALESCE(doc_type,'invoice') AS doc_type,img IS NOT NULL AS has_img FROM history WHERE user_id=? ORDER BY id DESC LIMIT 300", (user["id"],))
-    return [dict(r) for r in rows]
+    rows, _ = q("SELECT id,file,created,n_fields,conf,n_items,total,ms,COALESCE(doc_type,'invoice') AS doc_type,img IS NOT NULL AS has_img,result FROM history WHERE user_id=? ORDER BY id DESC LIMIT 300", (user["id"],))
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["n_warnings"] = len(json.loads(d.pop("result")).get("warnings", []))
+        except (ValueError, TypeError):
+            d["n_warnings"] = 0
+        out.append(d)
+    return out
 
 
 @router.get("/history/{hid}")
@@ -146,6 +207,56 @@ def history_delete(hid: int, user=Depends(current_user)):
         Path(r["img"] or "").unlink(missing_ok=True)
     q("DELETE FROM history WHERE id=? AND user_id=?", (hid, user["id"]))
     return {"ok": True}
+
+
+@router.get("/stats")
+def stats(user=Depends(current_user)):
+    """Everything the profile and dashboard pages draw: totals, documents per day (30 days) and per day and type (90 days), confidence histogram, time and warnings by type,
+    the checks that fail most, the fields read with the lowest confidence, a weekday x hour activity map and the latest documents."""
+    rows, _ = q("SELECT id,file,created,conf,ms,COALESCE(doc_type,'invoice') AS doc_type,result FROM history WHERE user_id=? ORDER BY id", (user["id"],))
+    by_type: dict[str, int] = {}
+    per_day: dict[str, int] = {}
+    per_day_type: dict[str, dict[str, int]] = {}
+    sec_sum: dict[str, float] = {}
+    warn_by_type: dict[str, int] = {}
+    codes: dict[str, int] = {}
+    field_conf: dict[str, list[float]] = {}
+    hist = [0] * 10
+    heat = [[0] * 24 for _ in range(7)]
+    warn = 0
+    now = time.time()
+    for r in rows:
+        t = r["doc_type"]
+        by_type[t] = by_type.get(t, 0) + 1
+        sec_sum[t] = sec_sum.get(t, 0.0) + (r["ms"] or 0) / 1000
+        hist[min(9, int((r["conf"] or 0) * 10))] += 1
+        lt = time.localtime(r["created"])
+        heat[lt.tm_wday][lt.tm_hour] += 1
+        day = time.strftime("%Y-%m-%d", lt)
+        if r["created"] >= now - 30 * 86400:
+            per_day[day] = per_day.get(day, 0) + 1
+        if r["created"] >= now - 90 * 86400:
+            per_day_type.setdefault(day, {})[t] = per_day_type.get(day, {}).get(t, 0) + 1
+        try:
+            res = json.loads(r["result"])
+        except (ValueError, TypeError):
+            continue
+        if res.get("warnings"):
+            warn += 1
+            warn_by_type[t] = warn_by_type.get(t, 0) + 1
+        for w in res.get("warnings", []):
+            codes[w.get("code", "?")] = codes.get(w.get("code", "?"), 0) + 1
+        for f in res.get("fields", []):
+            if f.get("label") and f.get("confidence") is not None:
+                field_conf.setdefault(f["label"], []).append(float(f["confidence"]))
+    n = len(rows)
+    weakest = sorted(({"label": k, "avg": round(sum(v) / len(v), 4), "n": len(v)} for k, v in field_conf.items() if len(v) >= 3), key=lambda d: d["avg"])[:8]
+    recent = [{"id": r["id"], "file": r["file"], "doc_type": r["doc_type"], "created": r["created"], "conf": r["conf"] or 0.0} for r in reversed(rows[-6:])]
+    return {"documents": n, "by_type": by_type, "avg_confidence": round(sum(r["conf"] or 0 for r in rows) / n, 4) if n else 0.0,
+            "avg_seconds": round(sum(r["ms"] or 0 for r in rows) / n / 1000, 2) if n else 0.0, "with_warnings": warn, "per_day": per_day, "per_day_type": per_day_type,
+            "confidence_hist": hist, "seconds_by_type": {t: round(sec_sum[t] / by_type[t], 2) for t in by_type}, "warnings_by_type": warn_by_type,
+            "warning_codes": sorted(codes.items(), key=lambda kv: -kv[1])[:8], "weakest_fields": weakest, "heatmap": heat, "recent": recent,
+            "first": rows[0]["created"] if n else None, "last": rows[-1]["created"] if n else None}
 
 
 @router.get("/scans/{hid}/image")

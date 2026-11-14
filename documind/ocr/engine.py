@@ -34,4 +34,5 @@ def run_ocr(gray: np.ndarray, *, scale: float = 1.0, lang: str = OCR_LANG, psm: 
                 "y1": (y + h) / scale,
             }
         )
-    return words
+    from .refine import refine_words                      # optional second opinion of the trained model (DOCUMIND_OCR_REFINE, off by default)
+    return refine_words(gray, words, scale)

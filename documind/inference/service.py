@@ -16,9 +16,10 @@ from .export import rows_to_csv
 from .extractor import FieldExtractor, ModelNotFound
 from .router import TYPES, detect_type
 
-CSV_NAMES = {"invoice": "invoices.csv", "receipt": "receipts.csv", "cheque": "cheques.csv"}
-LABELS = {"invoice": "Invoice", "receipt": "Receipt", "cheque": "Cheque"}
-TRAIN_CMD = {"invoice": "python -m documind.training.train", "receipt": "python -m documind.training.train_receipts", "cheque": "python -m documind.training.train_cheques"}
+CSV_NAMES = {"invoice": "invoices.csv", "receipt": "receipts.csv", "cheque": "cheques.csv", "contract": "contracts.csv"}
+LABELS = {"invoice": "Invoice", "receipt": "Receipt", "cheque": "Cheque", "contract": "Contract"}
+TRAIN_CMD = {"invoice": "python -m documind.training.train", "receipt": "python -m documind.training.train_receipts", "cheque": "python -m documind.training.train_cheques",
+             "contract": "python -m documind.training.train_contracts"}
 
 
 class DocumentService:
@@ -27,8 +28,8 @@ class DocumentService:
 
     # ------------------------------------------------------------------ what is installed
     def available(self) -> dict[str, bool]:
-        from . import cheques, receipts
-        return {"invoice": Path(MODEL_PATH).exists(), "receipt": receipts.model_available(), "cheque": cheques.model_available()}
+        from . import cheques, contracts, receipts
+        return {"invoice": Path(MODEL_PATH).exists(), "receipt": receipts.model_available(), "cheque": cheques.model_available(), "contract": contracts.model_available()}
 
     @property
     def invoice_loaded(self) -> bool:
@@ -46,6 +47,9 @@ class DocumentService:
         if doc_type == "cheque":
             from .cheques import CHEQUE_COLUMNS
             return list(CHEQUE_COLUMNS)
+        if doc_type == "contract":
+            from .contracts import CONTRACT_COLUMNS
+            return list(CONTRACT_COLUMNS)
         return self.invoice().columns
 
     # ------------------------------------------------------------------ extraction
@@ -61,9 +65,9 @@ class DocumentService:
             raise ValueError(f"Unknown document type '{doc_type}' (use auto, " + ", ".join(TYPES) + ").")
         if not av[doc_type]:
             raise ModelNotFound(f"The {doc_type} model is not installed. Train it first:  {TRAIN_CMD[doc_type]}")
-        if doc_type in ("receipt", "cheque"):
-            from . import cheques, receipts
-            extractor = receipts.extract_receipt_bytes if doc_type == "receipt" else cheques.extract_cheque_bytes
+        if doc_type in ("receipt", "cheque", "contract"):
+            from . import cheques, contracts, receipts
+            extractor = {"receipt": receipts.extract_receipt_bytes, "cheque": cheques.extract_cheque_bytes, "contract": contracts.extract_contract_bytes}[doc_type]
             try:
                 result = extractor(data, filename)
             except SystemExit as exc:                              # load_model() reports a missing Ultralytics package this way

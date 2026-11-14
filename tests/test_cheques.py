@@ -163,7 +163,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(receipts, "_model", FakeYolo())
     monkeypatch.setattr(receipts, "model_available", lambda path=receipts.MODEL_PATH: True)
     monkeypatch.setattr(receipts, "ocr_box", lambda img, xyxy, **kw: OCR_TEXT[tuple(int(v) for v in xyxy)])
-    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": True, "cheque": True})
+    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": True, "cheque": True, "contract": False})
     monkeypatch.setattr(service.DocumentService, "invoice", lambda self: FakeInvoice())
 
     def words(img, max_side=1400):
@@ -220,7 +220,7 @@ def test_history_shows_the_cheque_amount_and_the_dataset_keeps_a_csv_per_type(cl
 
 
 def test_missing_cheque_model_gives_the_train_command(client, monkeypatch):
-    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": True, "cheque": False})
+    monkeypatch.setattr(service.DocumentService, "available", lambda self: {"invoice": True, "receipt": True, "cheque": False, "contract": False})
     assert _post(client, "c.png", CHEQUE_PNG).json()["doc_type"] != "cheque"                    # not installed: the router never picks it
     r = _post(client, "c.png", CHEQUE_PNG, params={"doc_type": "cheque"})
     assert r.status_code == 503 and "train_cheques" in r.json()["detail"]

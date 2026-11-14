@@ -128,18 +128,110 @@ On a sample of generated cheques (true boxes, Tesseract): bank, cheque number, a
 amount in words understood on 31/40 (the checker never said "mismatch" for a consistent cheque, and never said "ok" for a wrong amount). Tesseract reads real
 cursive handwriting badly: to read real cheques replace `read_text` in `documind/inference/cheques.py` by a handwriting model (e.g. TrOCR).
 
-### Several document types in one app (invoice + receipt + cheque)
+### Loan contracts (YOLO detector + checks)
+
+Data: made by `scripts/generate_contracts.py` (19 classes, one A4 page per contract: personal loan, car loan, mortgage; boxes on the values; exact labels + `ground_truth.jsonl`):
+title, contract_number, contract_date, lender_name, borrower_name, borrower_id, borrower_address, amount, amount_words, interest_rate, duration, monthly_payment,
+first_payment_date, iban, place, signing_date, signature_lender, signature_borrower, stamp.
+```
+python scripts/generate_contracts.py --n 10000 --out data/raw/contracts          # 8000 train / 1000 val / 1000 test  (--currency EUR, --type car)
+python -m documind.data.prepare_contracts                  # STEP 1: data/raw/contracts (else data/raw/contract_dataset) -> data/processed/contracts_yolo
+                                                           #   same checks as receipts and cheques, reports/contracts_prepare_report.txt + reports/contracts_preview/ (LOOK at it)
+python -m documind.training.train_contracts                # STEP 2: yolo11s, 60 epochs (early stop 15), imgsz 1280, batch 4, no mosaic -> models/contracts_yolo.pt
+                                                           #   precision / recall / mAP50 / found_rate per class on val AND test (reports/contracts_report.json) + the 0.90 verdict
+python -m documind.inference.contracts contract.jpg        # STEP 3: fields + checks + the CSV row
+```
+Notebook version: `notebooks/train_contracts_yolo.ipynb`. `prepare_contracts` / `train_contracts` reuse the receipt code (`prepare_receipts.run`, `train_receipts.run_cli` with a
+`Profile`), so every type gets the same validation, scores and target check, and none overwrites another's reports or weights.
+
+A contract is running text, so **several boxes of one class per page are normal**: the lender's name is printed twice (letterhead + first paragraph) and a value that does not
+fit at the end of a line wraps onto the next one (one box per line). The reader puts the boxes of a field back in reading order (the page tilt is measured and removed first,
+`documind/ocr/lines.py`) and joins their texts; the most confident copy of the lender's name is kept.
+
+`contracts.csv` columns: file, CONTRACT_TYPE, TITLE, CONTRACT_NO, CONTRACT_DATE, LENDER, BORROWER, BORROWER_ID, BORROWER_ADDRESS, AMOUNT, CURRENCY, AMOUNT_WORDS, RATE,
+DURATION_MONTHS, MONTHLY_PAYMENT, FIRST_PAYMENT_DATE, IBAN, PLACE, SIGNING_DATE, SIGNED_LENDER, SIGNED_BORROWER, STAMP, AMOUNT_CHECK, PAYMENT_CHECK.
+Checks (shown as warnings, never silently corrected): amount in figures = amount in words (French words converted back to a number, millions included); monthly payment = the
+loan formula for the amount, the rate and the duration (within 1 %); real dates, first payment after the contract date, signing date not before it; IBAN length (MA 28, FR 27);
+both signatures found. On generated contracts (true boxes, Tesseract, 16 pages) amount, duration, monthly payment, currency and type were read 16/16, rate 15/16,
+borrower 15/16, IBAN 12/16 (long digit strings: the IBAN length check and the payment formula caught the slips). The router recognises a contract page from its French words
+(contrat, prêteur, emprunteur, soussignés, TAEG ...).
+
+### OCR (train the text reader on your datasets)
+
+The detectors say WHERE a value is, the OCR says WHAT is written there. Tesseract is general-purpose: it drops accents, mixes 0 / 9 / 8, loses
+capitals and handwriting. This module fine-tunes a recognition model (TrOCR) on text-line crops cut out of **receipts**, **cheques**, **contracts** and **FATURA**.
+```
+pip install -r requirements-ocr.txt                         # transformers, sentencepiece, accelerate (next to your GPU build of PyTorch)
+python -m documind.data.prepare_ocr                         # STEP 1: crops + transcriptions -> data/processed/ocr_crops ; prints Tesseract's score (the number to beat)
+python -m documind.training.train_ocr --smoke               # 1 minute: checks that everything runs
+python -m documind.training.train_ocr                       # STEP 2: fine-tune microsoft/trocr-small-printed, 4 epochs, best epoch -> models/ocr_trocr
+python -m documind.training.evaluate_ocr                    # STEP 3: Tesseract vs the new model per source and field -> reports/ocr_report.json
+```
+Notebook version: `notebooks/train_ocr_trocr.ipynb`. Options: `--base microsoft/trocr-base-handwritten --batch 8` (handwriting of the cheques),
+`--sources cheques`, `--epochs 6`. Dataset folders are found automatically (`data/raw/receipts|receipt_dataset`, `cheques|cheque_dataset`, `contracts|contract_dataset`, `FATURA`);
+`--fatura-mode xywh|xyxy` if the FATURA crops of `reports/ocr_crops_preview.png` look shifted.
+
+* Labels: the receipt and cheque transcriptions come from the generators' `ground_truth.jsonl` + the box of every field (checked against Tesseract:
+  field by field the label matches what is printed; the cheque number is printed `N° 1234567`, the account number in groups of 4); FATURA uses the
+  transcription stored with each annotated box. Splits: the generators' own, FATURA by invoice.
+* Using it: nothing to change. When `models/ocr_trocr` exists, **both engines read every box** of the receipt, cheque and contract readers and the better reading is
+  kept (`documind/ocr/ensemble.py`). The rules, in order: only one engine returned text -> that one; both read the same -> that; a cross-check accepts only one (the cheque's
+  amount in words must be the amount in figures) -> that one; the format of the field (a date must be a date, an amount must look like an amount, a phone number has 10
+  digits, an IBAN the length of its country, the amount in words must be understood as a number) clearly fits one reading better -> that one; otherwise the trained model
+  decides (`DOCUMIND_OCR_PRIMARY=tesseract` to let Tesseract decide). When both look fine and differ the checker cannot know which is true, it only rejects readings that
+  cannot be right. `DOCUMIND_OCR=auto` (default, Tesseract alone if no model) | `both` (error if the model is missing) | `trocr` | `tesseract`.
+  For invoices Tesseract still finds the words; `DOCUMIND_OCR_REFINE=lowconf` lets the trained model re-read the doubtful ones and the same arbitration keeps the better
+  reading (off by default; check the invoice scores before keeping it, the classifier was trained on Tesseract text). `documind.ocr.ensemble.summary()` counts which rule decided.
+* Where the gain is: on generated crops Tesseract (with each crop scaled to ~40 px high) already has a CER of about 2 % on receipts and 4 % on cheques; its mistakes are
+  accents and capitals, the long handwritten amount in words, the MICR line and single digits. Run `prepare_ocr` (it prints these numbers for YOUR data) and
+  `evaluate_ocr` to see what the training really changes.
+* Careful: val / test crops come from the same generators as the training crops, so a very low error says the model learned these documents. Try real pictures.
+
+### Front end with Streamlit (sign in, dashboard, history, profile)
+
+```
+pip install -r requirements-streamlit.txt
+streamlit run streamlit_app.py                     # opens http://localhost:8501
+```
+A dark, animated interface (gradient background, a document being scanned on the sign-in page, count-up numbers, confidence rings, a reading animation; CSS only: no CDN, no font to
+download, `prefers-reduced-motion` switches it off): drifting blurred light behind everything, shimmering titles, a sheen sweeping over the main buttons, a rotating word
+(invoice / receipt / cheque / contract) in the sign-in headline, confetti when documents were read, cards and lists that slide in one after the other, and on the dashboard numbers that
+count up, lines that draw themselves, donut segments that sweep round, bars that grow or rise and a heat map that fades in diagonally. Pages:
+
+* **Sign in / Create account / Continue as a guest.** Accounts use the same SQLite database as the API (`data/documind.db`, salted PBKDF2 hashes, session tokens), so the API and this
+  page share the accounts. A guest can read documents but nothing is saved.
+* **Dashboard** (the landing page after signing in). Four animated KPI cards (documents in the last 7 / 30 / 90 days with a sparkline and the change against the previous period,
+  average confidence, average time, share of documents that need a look), documents per day stacked by type (interactive: tooltips), share by type (donut), how sure the readings were
+  (histogram, red / amber / green), the fields read with the least confidence, warning rate and average time by type, the checks that fail most (with plain names such as "Amount in
+  figures ≠ amount in words"), a weekday × hour heat map of when you read documents, and the latest documents (open one in the History). Statistics come from `GET /stats`.
+* **Read documents.** Drop invoices, receipts, cheques and contracts (JPG, PNG, PDF, several at once): the type is found (or chosen), the fields are drawn on the picture (a value wrapped
+  over two lines gets one box per line), the checks and warnings are listed, and you get **one CSV per document type** (`invoices.csv`, `receipts.csv`, `cheques.csv`, `contracts.csv`,
+  never merged) plus a zip. "Read as ..." buttons read a document again as another type. One bad file does not stop the others.
+* **History.** Every reading of your account, newest first: numbers, filters (type, file name, only with warnings), open a document to see it again with its stored picture and boxes, delete
+  it (the picture too), export the filtered documents as CSV (one file per type).
+* **Profile.** Avatar, member since, statistics (documents, average confidence and time, how many had warnings, most read type, activity of the last 30 days, split by type), edit the name,
+  change the password (the other sessions are signed out), download all your data as a zip, delete the account (password required; history and pictures are removed).
+
+Where it runs (sign-in page, "Connection"): **This computer** loads the models and the accounts inside the Streamlit process (nothing else to start), **API server** talks to the FastAPI
+server (`uvicorn documind.api.main:app`). New API endpoints for this: `PATCH /auth/me`, `POST /auth/password`, `POST /auth/delete`, `GET /stats`; `/history` also returns `n_warnings`.
+Files: `streamlit_app.py`, `documind/ui/views.py` (the pages), `documind/ui/theme.py` (the look), `documind/ui/backend.py` (the two backends, same behaviour: one test scenario runs on both),
+`documind/ui/helpers.py` (reading, drawing, CSV, history filters), `.streamlit/config.toml` (dark theme, 50 MB upload limit).
+Limits: you stay signed in only as long as the browser tab session lives (reloading the page asks for the password again); the look was checked by tests (well-formed HTML, escaped text,
+every animation defined), not by eye in every browser.
+
+### Several document types in one app (invoice + receipt + cheque + contract)
 Each type keeps its own model and its own CSV columns; they are never merged.
 ```
 picture / PDF -> router (page shape + key words, or the type chosen in the web page) -> invoice extractor (LightGBM)  -> invoices.csv
                                                                                     -> receipt extractor (YOLO+OCR) -> receipts.csv
                                                                                     -> cheque extractor (YOLO+OCR+checks) -> cheques.csv
+                                                                                    -> contract extractor (YOLO+OCR+checks) -> contracts.csv
 ```
-* `POST /extract?doc_type=auto|invoice|receipt|cheque` (default `auto`); the answer has `doc_type`, `doc_type_source` (auto / manual), `columns`.
+* `POST /extract?doc_type=auto|invoice|receipt|cheque|contract` (default `auto`); the answer has `doc_type`, `doc_type_source` (auto / manual), `columns`.
 * `POST /extract/batch` -> one CSV per type: a plain `invoices.csv` / `receipts.csv` / `cheques.csv` if the batch has one type, `extractions.zip` with one csv per type if it has several.
 * Web page: "Document type" selector (Auto-detect by default), a type badge on every document, "Read as ... instead" if the
-  router guessed wrong, and `CSV (per type)` downloads `invoices.csv`, `receipts.csv` and `cheques.csv` separately. History and the dataset export
-  (`dataset_invoices.csv`, `dataset_receipts.csv`, `dataset_cheques.csv`) are split the same way.
+  router guessed wrong, and `CSV (per type)` downloads `invoices.csv`, `receipts.csv`, `cheques.csv` and `contracts.csv` separately. History and the dataset export
+  (`dataset_invoices.csv`, `dataset_receipts.csv`, `dataset_cheques.csv`, `dataset_contracts.csv`) are split the same way.
 * A type whose model file is missing is simply not offered: with only the invoice model installed, everything goes to the invoice extractor.
 * New type later (ID card, bank statement ...): write an extractor that returns the same kind of dict and add it in `documind/inference/service.py`.
 

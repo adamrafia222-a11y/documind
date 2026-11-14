@@ -47,7 +47,7 @@ _UNITS = {"zero": 0, "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cin
           "treize": 13, "quatorze": 14, "quinze": 15, "seize": 16, "vingt": 20, "vingts": 20, "trente": 30, "quarante": 40, "cinquante": 50, "soixante": 60}
 _CURRENCY = {"dirham": "MAD", "dirhams": "MAD", "euro": "EUR", "euros": "EUR"}
 _CENTIME = {"centime", "centimes"}
-_VOCAB = list(_UNITS) + ["cent", "cents", "mille", "et"] + list(_CURRENCY) + list(_CENTIME)
+_VOCAB = list(_UNITS) + ["cent", "cents", "mille", "million", "millions", "et", "de"] + list(_CURRENCY) + list(_CENTIME)
 
 
 def _norm(text: str) -> list[str]:
@@ -68,7 +68,7 @@ def _words_to_int(tokens: list[str]) -> int | None:
     total = cur = 0
     prev = ""
     for tok in tokens:
-        if tok == "et":
+        if tok in ("et", "de"):                                  # "et" (soixante et onze) and "de" (un million de dirhams) carry no value
             continue
         if tok in _UNITS:
             if tok in ("vingt", "vingts") and prev == "quatre":
@@ -80,6 +80,9 @@ def _words_to_int(tokens: list[str]) -> int | None:
         elif tok == "mille":
             total += (cur or 1) * 1000
             cur = 0
+        elif tok in ("million", "millions"):
+            total += (cur or 1) * 1_000_000
+            cur = 0
         else:
             return None
         prev = tok
@@ -87,7 +90,7 @@ def _words_to_int(tokens: list[str]) -> int | None:
 
 
 def words_to_number(text: str) -> tuple[int, int, str] | None:
-    """French amount in words -> (units, cents, currency 'MAD' / 'EUR' / '') or None when it cannot be understood.
+    """French amount in words (up to 999 999 999) -> (units, cents, currency 'MAD' / 'EUR' / '') or None when it cannot be understood.
     'Mille deux cent trente dirhams et cinquante centimes' -> (1230, 50, 'MAD')."""
     toks = []
     for w in _norm(text or ""):
@@ -173,7 +176,7 @@ def load_model(path: Path = MODEL_PATH):
 
 def read_text(img: Image.Image, box, field: str, lang: str | None = None) -> str:
     """Text of one detected box. The only place that calls an OCR engine: replace it to use a handwriting model."""
-    return ocr_box(img, box, psm=7, lang=lang, whitelist=WHITELIST.get(field), **OCR_PARAMS.get(field, {}))
+    return ocr_box(img, box, psm=7, lang=lang, whitelist=WHITELIST.get(field), field=field, **OCR_PARAMS.get(field, {}))
 
 
 def fields_from_boxes(img: Image.Image, dets: list[tuple], lang: str | None = None) -> dict:
@@ -191,7 +194,7 @@ def fields_from_boxes(img: Image.Image, dets: list[tuple], lang: str | None = No
         agrees = lambda t: (w := words_to_number(t)) is not None and (amount is None or abs(w[0] + w[1] / 100 - amount) < 0.005)
         if not agrees(out["amount_words"]["raw_text"]):
             box = out["amount_words"]["bbox"]
-            alts = [ocr_box(img, box, psm=7, lang=lang, **kw) for kw in EXTRA_PASSES]
+            alts = [ocr_box(img, box, psm=7, lang=lang, field="amount_words", **kw) for kw in EXTRA_PASSES]
             out["amount_words"]["alternatives"] = alts
             best_alt = next((t for t in alts if agrees(t)), None)
             if best_alt is not None:
