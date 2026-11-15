@@ -54,6 +54,7 @@ def _tesseract_box(img: Image.Image, xyxy, psm: int, pad: int, scale: float, lan
     (tested: item quantity + price right 90 % with pad 2, 63 % with pad 6)."""
     import pytesseract
     from PIL import ImageOps
+    from ..ocr import resolve_lang
     if TESSERACT_CMD:
         pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
     x0, y0, x1, y1 = xyxy
@@ -61,7 +62,7 @@ def _tesseract_box(img: Image.Image, xyxy, psm: int, pad: int, scale: float, lan
     crop = crop.resize((max(1, int(crop.width * scale)), max(1, int(crop.height * scale))), Image.LANCZOS)
     crop = ImageOps.expand(ImageOps.autocontrast(crop, cutoff=1), border=16, fill=255)
     cfg = f"--psm {psm}" + (f" -c tessedit_char_whitelist={whitelist}" if whitelist else "")
-    return " ".join(pytesseract.image_to_string(crop, lang=lang or LANG, config=cfg).split())
+    return " ".join(pytesseract.image_to_string(crop, lang=resolve_lang(lang or LANG), config=cfg).split())
 
 
 def ocr_box(img: Image.Image, xyxy, psm: int = 7, pad: int = 2, scale: float = 3.0, lang: str | None = None, whitelist: str | None = None,

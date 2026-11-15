@@ -32,7 +32,7 @@ class FieldExtractor:
         self.model = bundle["model"]
         self.classes: list[str] = bundle["classes"]
         self.meta: dict = bundle.get("meta", {})
-        self.lang = lang or self.meta.get("ocr_lang", OCR_LANG)
+        self.lang = lang or OCR_LANG        # not the language saved at training time (FATURA = "eng"): French invoices need "eng+fra"
         self.psm = psm or self.meta.get("ocr_psm", OCR_PSM)
         self.min_confidence = min_confidence
         self.rules_psm = int(os.getenv("RULES_PSM", "4"))   # the table / totals rules read the page with psm 4 (columns)

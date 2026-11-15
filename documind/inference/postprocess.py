@@ -23,15 +23,16 @@ from ..features.builder import DATE_RE, parse_amount
 
 _NUM = re.compile(r"^[-(]?[$€£]?\d[\d,. ]*\)?[$€£]?$")
 _HDR = {
-    "desc": re.compile(r"^(descriptions?|items?|details?|products?|particulars?|services?|designation|libell[eé]|article)$"),
-    "qty": re.compile(r"^(qty|quantity|qte|quantit[eé]|hrs|hours|units|pcs)$"),
-    "price": re.compile(r"^(price|rate|unit|cost|prix|pu)$"),
-    "amount": re.compile(r"^(amount|total|montant|ext)$"),
+    "desc": re.compile(r"^(descriptions?|items?|details?|products?|particulars?|services?|d[eé]signation|libell[eé]|article|produits?|prestations?)$"),
+    "qty": re.compile(r"^(qty|quantity|qte|qt[eé]|quantit[eé]|nb|hrs|hours|units|pcs)$"),
+    "price": re.compile(r"^(price|rate|unit|cost|prix|pu|p\.?u\.?|tarif)$"),
+    "amount": re.compile(r"^(amount|total|montant|ext|ht|ttc)$"),
     "tax": re.compile(r"^(tax|vat|gst|tva|taxe)$"),
     "id": re.compile(r"^(id|#|no|n°|nº|ref|sku|code|pos|nr)$"),
 }
 _STOP = {"subtotal", "sub", "total", "tax", "vat", "gst", "tva", "discount", "balance", "amount", "shipping", "payment",
-         "terms", "notes", "note", "thank", "thanks", "sales", "grand", "bank", "net", "paid", "due", "signature"}
+         "terms", "notes", "note", "thank", "thanks", "sales", "grand", "bank", "net", "paid", "due", "signature",
+         "sous", "remise", "rabais", "solde", "reste", "taxe", "paiement", "conditions", "merci", "banque", "iban", "rib"}   # + French
 
 
 _CUR = r"(?:US\$|CA\$|A\$|USD|EUR|GBP|MAD|CAD|AUD|CHF|INR|JPY|DHS?|RS\.?|[$€£¥₹])"
@@ -336,7 +337,8 @@ def _extract_by_header(words: list[dict], width: float, height: float, page: int
 # This one does not: it finds the block of rows that end with numbers, clusters those numbers into columns, and finds
 # which column is the quantity, the unit price and the amount by arithmetic (qty x price = amount), whatever the header says.
 _ISNUM = lambda t: _num(t) or bool(_PCT.match(t))
-_TOTAL_WORDS = {"subtotal", "sub", "total", "grand", "balance", "net", "discount", "shipping", "tax", "vat", "gst", "tva", "amount"}
+_TOTAL_WORDS = {"subtotal", "sub", "total", "grand", "balance", "net", "discount", "shipping", "tax", "vat", "gst", "tva", "amount",
+                "sous", "remise", "rabais", "solde", "reste", "taxe", "montant"}   # + French
 
 
 def _val(t: str) -> float | None:
@@ -623,19 +625,20 @@ def _check_items(items: list[dict], subtotal: float | None, total: float | None 
 
 # --------------------------------------------------------------------------- totals and key: value pairs
 def _key_of(text: str) -> str | None:
+    """Label of an amount line, in English or French (accents are optional: the OCR often drops them)."""
     t = text.lower()
-    if re.search(r"sub[\s_-]?total\b", t): return "SUB_TOTAL"
-    if re.search(r"\b(amount|balance)\s+due\b|\bdue\s+amount\b|\bbalance\b", t): return "AMOUNT_DUE"
-    if re.search(r"\bdiscount\b", t): return "DISCOUNT"
-    has_tax = re.search(r"\b(tax|vat|gst|tva|igst|cgst|sgst)\b", t)
-    if re.search(r"\btotal\b", t) and not re.search(r"\b(qty|quantity|words)\b", t) and (not has_tax or re.search(r"incl|including", t)):
+    if re.search(r"sub[\s_-]?total\b|\bsous[\s_-]?total\b|\b(total|montant)\s+h\.?t\b|\bh\.?t\s*:", t): return "SUB_TOTAL"
+    if re.search(r"\b(amount|balance)\s+due\b|\bdue\s+amount\b|\bbalance\b|\bnet\s+[àa]\s+payer\b|\breste\s+[àa]\s+payer\b|\bsolde\b|\bmontant\s+d[ûu]\b", t): return "AMOUNT_DUE"
+    if re.search(r"\bdiscount\b|\bremise\b|\brabais\b|\br[ée]duction\b", t): return "DISCOUNT"
+    has_tax = re.search(r"\b(tax|taxe|taxes|vat|gst|tva|igst|cgst|sgst)\b", t)
+    if re.search(r"\b(total|montant)\b", t) and not re.search(r"\b(qty|quantity|words|quantit[ée]|qt[ée]|lettres)\b", t) and (not has_tax or re.search(r"incl|including|inclus", t)):
         return "TOTAL"
     if has_tax: return "TAX"
     return None
 
 
-_TRIGGER = re.compile(r"^(sub[_-]?total|subtotal|total|tax|tax:vat|vat|gst|tva|igst|cgst|sgst|discount|balance|amount|grand|net|shipping)\b", re.I)
-_GLUE = {"grand", "sub", "balance", "amount", "net", "total"}
+_TRIGGER = re.compile(r"^(sub[_-]?total|subtotal|sous[_-]?total|total|tax|taxe|tax:vat|vat|gst|tva|igst|cgst|sgst|discount|remise|rabais|balance|solde|reste|amount|montant|grand|net|shipping)\b", re.I)
+_GLUE = {"grand", "sub", "sous", "balance", "amount", "montant", "net", "reste", "total"}
 
 
 def _segments(words: list[dict]) -> list[list[dict]]:
@@ -680,10 +683,10 @@ def extract_totals(lines: list[dict], start: int = 0, page: int = 1) -> dict[str
 
 
 _KV = {
-    "DUE_DATE": (re.compile(r"\bdue\s*date\b|\bpayment\s+due\b|\bdate\s+due\b"), "date"),
-    "DATE": (re.compile(r"(?<!due )\b(?:invoice\s+|issue\s+|issued\s+|billing\s+)?date\b(?!\s+due)"), "date"),
-    "NUMBER": (re.compile(r"\binv(?:oice)?\s*(?:#|no\.?|number|num\.?|id\b)"), "id"),
-    "PO_NUMBER": (re.compile(r"\bp\.?o\.?\s*(?:#|no\.?|number)?(?![a-z])|\bpurchase\s+order\b"), "id"),
+    "DUE_DATE": (re.compile(r"\bdue\s*date\b|\bpayment\s+due\b|\bdate\s+due\b|\bdate\s+d.?[ée]ch[ée]ance\b|\b[ée]ch[ée]ance\b|\bdate\s+limite\b|\bpayable\s+le\b"), "date"),
+    "DATE": (re.compile(r"(?<!due )(?<!ch[ée]ance )\b(?:date\s+(?:de\s+(?:la\s+)?(?:facture|facturation)|d.?[ée]mission)|[ée]mise?\s+le|(?:invoice\s+|issue\s+|issued\s+|billing\s+)?date)\b(?!\s+(?:due|d.?[ée]ch[ée]ance|limite))"), "date"),
+    "NUMBER": (re.compile(r"\binv(?:oice)?\s*(?:#|no\.?|number|num\.?|id\b)|\bfacture\s*(?:#|n[°ºo]\.?|num[ée]ro|num\.?)|\bn[°º]\s*(?:de\s+)?facture\b|\bnum[ée]ro\s+de\s+facture\b"), "id"),
+    "PO_NUMBER": (re.compile(r"\bp\.?o\.?\s*(?:#|no\.?|number)?(?![a-z])|\bpurchase\s+order\b|\bbon\s+de\s+commande\b|\bn[°º]\s*(?:de\s+)?commande\b"), "id"),
 }
 
 

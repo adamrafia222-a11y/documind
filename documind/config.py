@@ -40,9 +40,11 @@ MODEL_PATH = Path(os.getenv("DOCUMIND_MODEL_PATH", MODELS_DIR / "field_extractor
 # ---------------------------------------------------------------------- OCR
 # Windows example: C:\Program Files\Tesseract-OCR\tesseract.exe
 TESSERACT_CMD = os.getenv("TESSERACT_CMD")
-# FATURA is English -> "eng". For French documents use "fra" or "fra+eng"
-# (the matching .traineddata files must be installed with Tesseract).
-OCR_LANG = os.getenv("OCR_LANG", "eng")
+# Default "eng+fra": English and French documents are both read (Tesseract picks the best language word by word, so a French
+# invoice is no longer read with the English model only, which garbles or drops the accented words and the French labels).
+# Both .traineddata files must be installed with Tesseract; a missing one is skipped with a warning (see ocr/engine.py).
+# Arabic: add "ara" (OCR_LANG=eng+fra+ara). Each extra language makes the OCR a little slower.
+OCR_LANG = os.getenv("OCR_LANG", "eng+fra")
 # 6 = one uniform block of text, 11 = sparse text. Try both on your own documents.
 OCR_PSM = int(os.getenv("OCR_PSM", "6"))
 

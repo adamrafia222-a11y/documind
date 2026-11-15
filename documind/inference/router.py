@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from ..config import OCR_LANG, PDF_DPI, TESSERACT_CMD
+from ..ocr import resolve_lang
 from ..preprocessing import decode_image, pdf_to_images
 
 TYPES = ("invoice", "receipt", "cheque", "contract")      # a tie goes to the first one in this list
@@ -92,7 +93,7 @@ def quick_text(img: np.ndarray, max_side: int = 1400) -> str:
         k = max_side / max(h, w)
         small = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else img
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if small.ndim == 3 else small
-        return pytesseract.image_to_string(gray, lang=OCR_LANG, config="--psm 6")
+        return pytesseract.image_to_string(gray, lang=resolve_lang(OCR_LANG), config="--psm 6")
     except Exception:                                               # no Tesseract / no language data: the page shape alone decides
         return ""
 
