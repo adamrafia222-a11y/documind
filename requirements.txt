@@ -1,3 +1,9 @@
+# DocuMind - ONE requirements file for everything (API, models, receipt / cheque / contract detectors, OCR training, Streamlit front end).
+#   pip install -r requirements.txt
+# Install it in the environment that has the GPU build of PyTorch (e.g. pytorch_gpu): ultralytics and transformers use that PyTorch.
+# Not a pip package: the Tesseract program itself (Windows: https://github.com/UB-Mannheim/tesseract/wiki, then set TESSERACT_CMD if it is not on the PATH).
+
+# ---- API server and the invoice model
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
@@ -7,8 +13,34 @@ pandas>=2.1
 scikit-learn>=1.4
 lightgbm>=4.3
 joblib>=1.3
-opencv-python-headless>=4.9
 pytesseract>=0.3.10
 pymupdf>=1.24
 tqdm>=4.66
 pillow>=10.1
+
+# ---- OpenCV: ONE package only. ultralytics installs opencv-python itself, so opencv-python-headless (the old requirements.txt) is NOT listed:
+#      having both makes `import cv2` unreliable. On a server WITHOUT ultralytics, use opencv-python-headless>=4.9 instead of this line.
+opencv-python>=4.9
+
+# ---- receipt / cheque / contract detectors (YOLO). ultralytics brings PyTorch (a big download); use Colab / Kaggle for training if you have no GPU.
+ultralytics
+matplotlib
+
+# ---- OCR training (documind.training.train_ocr) and the trained recognizer used next to Tesseract
+transformers==4.46.3
+huggingface-hub>=0.25.0,<2.0
+tokenizers>=0.20.3,<0.22
+sentencepiece>=0.1.99       # tokenizer of microsoft/trocr-small-printed
+accelerate>=0.26
+tiktoken>=0.7.0             # fallback tokenizer path for TrOCR on Windows
+protobuf>=7.36.1,<8         # sentencepiece 0.2.3 expects a matching runtime/gencode version (Streamlit 1.67 accepts protobuf < 8)
+
+# ---- Streamlit front end (streamlit_app.py); altair, used by its dashboard chart, comes with it
+streamlit>=1.30
+requests                    # the "API server" mode of the front end
+
+# ---- only to run the tests (pytest tests/): uncomment if you want them
+# pytest
+# httpx
+# nbformat
+# ipython

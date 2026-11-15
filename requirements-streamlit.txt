@@ -1,4 +1,0 @@
-# Streamlit front end (streamlit_app.py). The reading itself needs the project's own requirements (requirements.txt, requirements-receipts.txt, requirements-ocr.txt).
-streamlit>=1.30
-pandas
-requests            # only for the "API server" mode

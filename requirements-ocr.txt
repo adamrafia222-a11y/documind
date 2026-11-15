@@ -1,8 +1,0 @@
-# OCR training (documind.training.train_ocr). Install in the environment that has the GPU build of PyTorch (pytorch_gpu).
-transformers==4.46.3
-huggingface-hub>=0.25.0,<2.0
-tokenizers>=0.20.3,<0.22
-sentencepiece>=0.1.99      # tokenizer of microsoft/trocr-small-printed
-accelerate>=0.26
-tiktoken>=0.7.0             # fallback tokenizer path for TrOCR on Windows
-protobuf>=7.36.1,<8        # sentencepiece 0.2.3 expects a matching runtime/gencode version
