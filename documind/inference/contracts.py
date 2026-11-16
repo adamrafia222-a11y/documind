@@ -27,6 +27,7 @@ import numpy as np
 from ..config import MODELS_DIR
 from ..ocr.lines import reading_order, skew_angle
 from .cheques import parse_amount, words_to_number
+from .contract_text import english_words_to_number, read_contract_text
 from .receipts import _open_receipt_image, ocr_box
 
 MODEL_PATH = MODELS_DIR / "contracts_yolo.pt"
@@ -42,7 +43,9 @@ CONTRACT_COLUMNS = ["file", "CONTRACT_TYPE", "TITLE", "CONTRACT_NO", "CONTRACT_D
                     "SIGNED_BORROWER", "STAMP", "AMOUNT_CHECK", "PAYMENT_CHECK"]
 ESSENTIAL = ("amount", "amount_words", "interest_rate", "duration", "monthly_payment", "borrower_name", "lender_name", "iban")
 IBAN_LENGTH = {"MA": 28, "FR": 27}
-MONTHS = {"janvier": 1, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6, "juillet": 7, "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11, "decembre": 12}
+MONTHS = {"janvier": 1, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6, "juillet": 7, "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11, "decembre": 12,
+          "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6, "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+          "jan": 1, "feb": 2, "fev": 2, "mar": 3, "apr": 4, "avr": 4, "jun": 6, "jul": 7, "juil": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12}
 
 
 def _fold(t: str) -> str:
@@ -52,34 +55,22 @@ def _fold(t: str) -> str:
 # ------------------------------------------------------------------------------------------------ parsing
 def contract_type(title: str) -> str:
     t = _fold(title)
-    return "mortgage" if "immobilier" in t else "car" if "automobile" in t else "personal" if "personnel" in t else ""
+    return "mortgage" if re.search(r"immobilier|mortgage|home loan", t) else "car" if re.search(r"automobile|car loan|vehicle", t) else "personal" if re.search(r"personnel|personal", t) else ""
 
 
 def parse_date_fr(text: str) -> _date | None:
-    """'12/05/2024', '12-05-24', '12 mars 2022' / '1er mai 2020' (accents optional) -> a date, or None."""
-    t = _fold(text)
-    m = re.search(r"(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{2,4})", t)
-    if m:
-        d, mo, y = (int(g) for g in m.groups())
-    else:
-        m = re.search(r"(\d{1,2})\s*(?:er)?\s+([a-z]+)\s+(\d{4})", t)
-        if not m or m.group(2) not in MONTHS:
-            return None
-        d, mo, y = int(m.group(1)), MONTHS[m.group(2)], int(m.group(3))
-    y += 2000 if y < 100 else 0
-    try:
-        return _date(y, mo, d)
-    except ValueError:
-        return None
+    """'12/05/2024', '12 mars 2022', '1 decembre 2005', 'December 1st, 2005', '1er déc. 05' (accents optional, OCR slips tolerated) -> a date, or None. See dates.py."""
+    from .dates import parse_date
+    return parse_date(text, strict=True)                    # strict: used to judge the FORMAT of a reading (OCR slips such as 1O are not repaired here)
 
 
 def parse_duration(text: str) -> int | None:
     """'36 mois' -> 36, '5 ans' -> 60."""
-    m = re.search(r"(\d+)\s*(mois|ans?|annees?)?", _fold(text))
+    m = re.search(r"(\d+)\s*(months?|years?|yrs?|mois|ans?|annees?)?", _fold(text))
     if not m:
         return None
     n = int(m.group(1))
-    return n * 12 if (m.group(2) or "").startswith(("an", "annee")) else n
+    return n * 12 if (m.group(2) or "").startswith(("an", "annee", "year", "yr")) else n
 
 
 def parse_rate(text: str) -> float | None:
@@ -152,6 +143,13 @@ def fields_from_boxes(img, dets: list[tuple], angle: float | None = None, lang: 
             text = clean_edges(ocr_box(img, xyxy, psm=7, lang=lang, field=name))
             out[name] = {"value": text, "raw_text": text, "box_confidence": round(conf, 2), "bbox": [round(float(v), 1) for v in xyxy], "n_boxes": len(items)}
             continue
+        if name in ("contract_date", "first_payment_date", "signing_date"):          # a (handwritten) date: several readings of the box vote for it
+            from .date_reader import read_date_box
+            xyxy, conf = max(items, key=lambda t: t[1])
+            vote = read_date_box(img, xyxy, lang)
+            text = clean_edges(vote["text"])
+            out[name] = {"value": text, "raw_text": text, "box_confidence": round(conf, 2), "bbox": [round(float(v), 1) for v in xyxy], "n_boxes": len(items), "readings": vote["readings"]}
+            continue
         order = reading_order(boxes, angle, img.size) if len(boxes) > 1 else [0]
         text = clean_edges(" ".join(t for t in (ocr_box(img, boxes[i], psm=7, lang=lang, field=name) for i in order) if t))
         out[name] = {"value": text, "raw_text": text, "box_confidence": round(min(c for _, c in items), 2), "bbox": _union(boxes), "n_boxes": len(items),
@@ -159,12 +157,39 @@ def fields_from_boxes(img, dets: list[tuple], angle: float | None = None, lang: 
     return out
 
 
-def interpret(got: dict) -> dict:
+def _readable(name: str, raw: str) -> bool:
+    """Is the text the detector read usable for this field? (an unreadable one is replaced by the text reading)"""
+    if name == "amount":
+        return parse_amount(raw) is not None
+    if name == "amount_words":
+        return bool(words_to_number(raw) or english_words_to_number(raw))
+    if name in ("contract_date", "first_payment_date", "signing_date"):
+        return parse_date_fr(raw) is not None
+    if name == "duration":
+        return parse_duration(raw) is not None
+    if name == "interest_rate":
+        return parse_rate(raw) is not None
+    if name in ("lender_name", "borrower_name"):
+        return len(re.findall(r"[A-Za-zÀ-ÿ]{2,}", raw)) >= 2
+    return bool(raw.strip())
+
+
+def merge_readings(got: dict, text_fields: dict) -> dict:
+    """Detector fields stay; a field the detector missed, or read as something unusable, comes from the text reading."""
+    out = dict(got)
+    for name, f in text_fields.items():
+        have = out.get(name)
+        if have is None or (name not in NO_TEXT and not _readable(name, have.get("raw_text", ""))):
+            out[name] = f
+    return out
+
+
+def interpret(got: dict, not_applicable: set | frozenset = frozenset()) -> dict:
     """Parse the texts and run the checks -> {"values": {...}, "checks": {...}, "warnings": [...]}."""
     g = lambda k: (got.get(k) or {}).get("raw_text", "")
     v, checks, warnings = {}, {}, []
     amount = parse_amount(g("amount")) if "amount" in got else None
-    words = words_to_number(g("amount_words")) if "amount_words" in got else None
+    words = (words_to_number(g("amount_words")) or english_words_to_number(g("amount_words"))) if "amount_words" in got else None
     v["amount"] = f"{amount:.2f}" if amount is not None else g("amount")
     v["currency"] = currency_of(g("amount")) or (words[2] if words else "")
     v["amount_words"] = g("amount_words")
@@ -226,7 +251,7 @@ def interpret(got: dict) -> dict:
     for who in ("lender", "borrower"):
         if not checks[f"signature_{who}"]:
             warnings.append({"code": f"no_signature_{who}", "message": f"No signature of the {who} was detected."})
-    missing = [k for k in ESSENTIAL if k not in got]
+    missing = [k for k in ESSENTIAL if k not in got and k not in not_applicable]       # e.g. no monthly payment / IBAN in a single-repayment loan
     if missing:
         warnings.append({"code": "missing_field", "message": "Not found on the picture: " + ", ".join(missing) + ". Is this a loan contract, and is the picture sharp?"})
     return {"values": v, "checks": checks, "warnings": warnings}
@@ -235,14 +260,27 @@ def interpret(got: dict) -> dict:
 def extract_contract_bytes(data: bytes, filename: str = "contract", conf: float = 0.25, lang: str | None = None, model=None) -> dict:
     """Picture / PDF bytes -> the same kind of dict as the other extractors (fields, row, columns, warnings, doc_type) plus `checks`."""
     img, n_pages = _open_receipt_image(data, filename)
-    model = model or load_model()
-    r = model.predict(img, imgsz=int(model.overrides.get("imgsz", 1280)), conf=conf, verbose=False)[0]
-    dets = [(model.names[int(b.cls)], b.xyxy[0].tolist(), float(b.conf)) for b in r.boxes]
+    dets, notes = [], []
+    try:
+        model = model or load_model()
+        r = model.predict(img, imgsz=int(model.overrides.get("imgsz", 1280)), conf=conf, verbose=False)[0]
+        dets = [(model.names[int(b.cls)], b.xyxy[0].tolist(), float(b.conf)) for b in r.boxes]
+    except SystemExit:                                            # no trained detector / no ultralytics: the text reader below still works
+        notes.append({"code": "detector_missing", "message": "The contract detector is not installed: the contract was read from its text only."})
     got = fields_from_boxes(img, dets, None, lang)
-    res = interpret(got)
+    try:
+        text = read_contract_text(img, lang)                      # English or French sentences + signatures: fills what the detector missed
+    except Exception as exc:                                      # never lose the detector result because the second reading failed ... but say it
+        import logging
+        logging.getLogger("documind").exception("contract text reading failed")
+        text = {"fields": {}, "not_applicable": set()}
+        notes.append({"code": "text_reading_failed", "message": f"The second reading of the contract (from its text) failed: {type(exc).__name__}: {str(exc)[:200]}"})
+    got = merge_readings(got, text["fields"])
+    res = interpret(got, text["not_applicable"])
+    res["warnings"] = notes + res["warnings"]
     v = res["values"]
     shown = {"amount": v["amount"] or None, "monthly_payment": v["monthly_payment"] or None, "interest_rate": v["rate"] or None}
-    fields = [{"label": FIELD_LABELS[k], "text": (shown.get(k) or x["value"] or x["raw_text"]), "confidence": x["box_confidence"], "bbox": x["bbox"], "page": 1, "source": "detector",
+    fields = [{"label": FIELD_LABELS[k], "text": (shown.get(k) or x["value"] or x["raw_text"]), "confidence": x["box_confidence"], "bbox": x["bbox"], "page": 1, "source": x.get("source", "detector"),
                **({"boxes": x["boxes"]} if len(x.get("boxes", [])) > 1 else {})}                     # a value wrapped over several lines: draw each line, not one big rectangle
               for k, x in got.items() if x["value"] or x["raw_text"]]
     fields.sort(key=lambda f: (f["bbox"][1], f["bbox"][0]))

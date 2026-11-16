@@ -49,6 +49,9 @@ CONTRACT_WORDS = [
     (r"taux (annuel|d.interet|fixe)", 1.5), (r"mensualites?", 2.0), (r"lu et approuve", 3.0), (r"exemplaires originaux", 2.0), (r"capital restant du", 2.0),
     (r"pret (personnel|immobilier)", 2.0), (r"credit automobile", 2.0), (r"carte nationale d.identite", 2.0), (r"ci.apres denomme", 3.0), (r"d.une part", 2.0),
     (r"remboursement anticipe", 2.0), (r"decheance du terme", 2.0), (r"droit de retractation", 2.0),
+    # English loan agreement
+    (r"loan agreement", 3.0), (r"lender", 2.0), (r"borrower", 2.0), (r"between the undersigned", 3.0), (r"hereinafter", 2.0), (r"in witness whereof", 3.0),
+    (r"early repayment", 2.0), (r"interest[- ]free", 1.0), (r"interest rate", 1.0), (r"monthly (installments?|payments?)", 1.0), (r"object of the loan", 2.0),
 ]
 _CHQ = [(re.compile(rf"\b{p}\b"), w) for p, w in CHEQUE_WORDS]
 _CON = [(re.compile(rf"\b{p}\b"), w) for p, w in CONTRACT_WORDS]

@@ -33,7 +33,11 @@ def available(model_dir: Path = MODEL_DIR) -> bool:
 
 def filter_chars(text: str, allowed: str | None) -> str:
     """Keep only the characters a field can contain (a quantity is digits): the whitelist of the Tesseract path, applied after reading."""
-    return text if not allowed else "".join(c for c in text if c in allowed).strip()
+    if not allowed:
+        return text
+    if "-" in allowed:
+        text = "".join("-" if c in "–—−" else c for c in text)             # 150–00 (en / em dash) is 150-00
+    return "".join(c for c in text if c in allowed).strip()
 
 
 class TrOCRRecognizer:
@@ -56,6 +60,19 @@ class TrOCRRecognizer:
                 ids = self.model.generate(pixel, num_beams=self.num_beams, max_new_tokens=self.max_new_tokens)
             out += [clean_text(t) for t in self.processor.batch_decode(ids, skip_special_tokens=True)]
         return out
+
+
+def _read_nbest(self, image: Image.Image, n: int = 5) -> list[str]:
+    """The n most likely readings of ONE crop (beam search), best first, duplicates removed. A handwritten "Quarante-huit" read as "Quarante" is often the 2nd or 3rd choice."""
+    torch = self.torch
+    pixel = self.processor(images=[image.convert("RGB")], return_tensors="pt").pixel_values.to(self.device)
+    with torch.no_grad():
+        ids = self.model.generate(pixel, num_beams=max(self.num_beams, n), num_return_sequences=n, max_new_tokens=self.max_new_tokens)
+    texts = [clean_text(t) for t in self.processor.batch_decode(ids, skip_special_tokens=True)]
+    return list(dict.fromkeys(t for t in texts if t))
+
+
+TrOCRRecognizer.read_nbest = _read_nbest
 
 
 def get_engine(model_dir: Path = MODEL_DIR):

@@ -21,6 +21,13 @@ sys.path.insert(0, str(ROOT))                                  # `import documin
 
 import streamlit as st                                         # noqa: E402
 
+_torch = sys.modules.get("torch")                              # Streamlit's file watcher walks every module's __path__ and torch.classes raises "Tried to instantiate class '__path__._path'" (harmless noise).
+if _torch is not None:                                         # Only patched when torch is ALREADY loaded: importing it here would change the order in which the DLLs load
+    try:                                                       # (numpy / scikit-learn / torch each bring an OpenMP runtime: "OMP: Error #15" on Windows + Anaconda).
+        _torch.classes.__path__ = []
+    except Exception:
+        pass
+
 st.set_page_config(page_title="DocuMind", page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
 
 from documind.ui import views as V                             # noqa: E402

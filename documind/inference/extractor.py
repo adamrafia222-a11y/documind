@@ -118,7 +118,7 @@ class FieldExtractor:
     def extract_image(self, img: np.ndarray, page: int = 1) -> dict:
         h, w = img.shape[:2]
         prep = preprocess(img)                                   # full pre-processing (with deskew)
-        words = run_ocr(prep.image, scale=prep.scale, lang=self.lang, psm=self.psm)
+        words = run_ocr(prep.image, scale=prep.scale, lang=self.lang, psm=self.psm, handwriting=True)
         if not words:
             return {"page": page, "n_words": 0, "mean_ocr_conf": 0.0, "fields": [], "deskew_angle": prep.angle, "size": [int(w), int(h)]}
 

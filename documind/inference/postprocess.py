@@ -20,6 +20,7 @@ import re
 from statistics import median
 
 from ..features.builder import DATE_RE, parse_amount
+from .dates import find_dates
 
 _NUM = re.compile(r"^[-(]?[$€£]?\d[\d,. ]*\)?[$€£]?$")
 _HDR = {
@@ -705,6 +706,14 @@ def extract_pairs(lines: list[dict], page: int = 1) -> dict[str, dict]:
                 continue
             def good(w):
                 return bool(DATE_RE.match(w["text"])) if kind == "date" else (any(c.isdigit() for c in w["text"]) and len(w["text"]) >= 2 and not DATE_RE.match(w["text"]))
+            if kind == "date":                                        # "Date: 1 decembre 2005", "Due date: December 1st, 2026": several words, month in letters
+                f = next((f for f in find_dates(text[m.end():]) if f.start <= 3), None)
+                if f:
+                    a_, b_ = m.end() + f.start, m.end() + f.end
+                    ws = [w for w, o in zip(ln["words"], offs) if o < b_ and o + len(w["text"]) > a_]
+                    if ws:
+                        out[label] = {"text": text[a_:b_], "bbox": _box(ws), "page": page}
+                        continue
             same = [w for w, o in zip(ln["words"], offs) if o >= m.end() and re.search(r"\w", w["text"])]
             if same:                                                  # value right after the key, same row
                 if good(same[0]):
@@ -713,6 +722,19 @@ def extract_pairs(lines: list[dict], page: int = 1) -> dict[str, dict]:
             key_x1 = max(w["x1"] for w, o in zip(ln["words"], offs) if o < m.end())
             for nb in (lines[idx + 1] if idx + 1 < len(lines) else None, lines[idx - 1] if idx else None):   # OCR split the row in two
                 if nb and abs(nb["cy"] - ln["cy"]) <= 1.6 * max(1.0, ln["y1"] - ln["y0"]):
+                    if kind == "date":                                    # the date on the neighbouring row, month in letters
+                        nbw = [w for w in nb["words"] if w["x0"] >= key_x1 - 2]
+                        nt = " ".join(w["text"] for w in nbw)
+                        f = next(iter(find_dates(nt)), None)
+                        if f:
+                            pos, ws = 0, []
+                            for w in nbw:
+                                if pos < f.end and pos + len(w["text"]) > f.start:
+                                    ws.append(w)
+                                pos += len(w["text"]) + 1
+                            if ws:
+                                out[label] = {"text": nt[f.start:f.end], "bbox": _box(ws), "page": page}
+                                break
                     cand = [w for w in nb["words"] if w["x0"] >= key_x1 - 2 and good(w)]
                     if cand:
                         out[label] = {"text": cand[0]["text"].lstrip(":#"), "bbox": _box([cand[0]]), "page": page}
@@ -726,7 +748,7 @@ def _has(label: str, fields: list[dict]) -> bool:
     if label in ("SUB_TOTAL", "TAX", "TOTAL", "DISCOUNT", "AMOUNT_DUE"):
         return any(_money(t) or (_num(t) and "." in t) for tx in texts for t in tx.split())
     if label in ("DATE", "DUE_DATE"):
-        return any(DATE_RE.match(t.strip(":")) for tx in texts for t in tx.split())
+        return any(DATE_RE.match(t.strip(":")) for tx in texts for t in tx.split()) or any(find_dates(tx) for tx in texts)
     return any(any(c.isdigit() for c in t) for tx in texts for t in tx.split())
 
 

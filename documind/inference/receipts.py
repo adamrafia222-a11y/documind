@@ -73,17 +73,27 @@ def ocr_box(img: Image.Image, xyxy, psm: int = 7, pad: int = 2, scale: float = 3
          tesseract               Tesseract only            trocr   the trained recognizer only
     `whitelist` limits the characters the box can contain (digits only for a quantity, ...), `field` names the kind of value (date, total, iban ...) so that
     the format of the reading can be checked, `prefer(text) -> bool` is an optional cross-check (the amount in words must be the amount in figures)."""
-    from ..ocr import ensemble, trocr
-    engine = trocr.get_engine()
-    if engine is None:
+    from ..ocr import ensemble, handwriting, trocr
+    engine, hw = trocr.get_engine(), handwriting.get_engine()
+    neural_wl = (whitelist + "£$€") if (whitelist and field == "amount_digits") else whitelist       # the models can read the currency sign (Tesseract's whitelist stays ASCII)
+    if engine is None and hw is None:
         return _tesseract_box(img, xyxy, psm, pad, scale, lang, whitelist)
     x0, y0, x1, y1 = xyxy
     crop = img.crop((max(0, int(x0) - 3), max(0, int(y0) - 3), min(img.width, int(x1) + 4), min(img.height, int(y1) + 4)))
-    neural = trocr.filter_chars(engine.read([crop])[0], whitelist)
-    if os.getenv("DOCUMIND_OCR", "auto").lower() == "trocr":
-        return neural
-    classic = _tesseract_box(img, xyxy, psm, pad, scale, lang, whitelist)
-    return ensemble.choose({"trocr": neural, "tesseract": classic}, field=field, whitelist=whitelist, prefer=prefer).text
+    readings: dict[str, str] = {}
+    if engine is not None:
+        readings["trocr"] = trocr.filter_chars(handwriting.safe_read(engine, [crop], "trocr")[0], neural_wl)
+        if os.getenv("DOCUMIND_OCR", "auto").lower() == "trocr":
+            return readings["trocr"]
+    readings["tesseract"] = _tesseract_box(img, xyxy, psm, pad, scale, lang, whitelist)
+    primary = None
+    if hw is not None:                                   # handwriting: Tesseract reads print only, the handwriting recognizer gets a say when the box is not print
+        conf = handwriting.tesseract_conf(img, xyxy, pad, scale, lang)
+        if handwriting.wanted(field, conf, ensemble.plausibility(field, readings["tesseract"], whitelist)):
+            readings["handwriting"] = trocr.filter_chars(handwriting.safe_read(hw, [crop])[0], neural_wl)
+            # ties go to the handwriting model when Tesseract says it is not print, and for fields that are handwritten by nature (the printed-text model would win otherwise)
+            primary = "handwriting" if (conf < handwriting.LOW_CONF or field in handwriting.ALWAYS) else None
+    return ensemble.choose(readings, field=field, whitelist=whitelist, prefer=prefer, primary=primary).text
 
 
 def _union(boxes) -> list[float]:
@@ -93,7 +103,11 @@ def _union(boxes) -> list[float]:
 def _parse(name: str, txt: str) -> str | None:
     if name == "date":
         m = DATE_RE.search(txt)
-        return m.group(0).replace(" ", "") if m else None
+        if m:
+            return m.group(0).replace(" ", "")
+        from .dates import find_dates                              # "12 mars 2024", "March 12, 2024"
+        f = next(iter(find_dates(txt)), None)
+        return f.text if f else None
     if name == "time":
         m = TIME_RE.search(txt)
         return m.group(0).replace(" ", "").replace("H", "h") if m else None

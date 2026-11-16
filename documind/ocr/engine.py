@@ -45,7 +45,7 @@ def resolve_lang(lang: str | None = None) -> str:
     return "+".join(ok) or ("eng" if "eng" in have else sorted(have - {"osd"})[0] if have - {"osd"} else "eng")
 
 
-def run_ocr(gray: np.ndarray, *, scale: float = 1.0, lang: str = OCR_LANG, psm: int = OCR_PSM) -> list[dict]:
+def run_ocr(gray: np.ndarray, *, scale: float = 1.0, lang: str = OCR_LANG, psm: int = OCR_PSM, handwriting: bool = False) -> list[dict]:
     data = pytesseract.image_to_data(
         gray, lang=resolve_lang(lang), config=f"--oem 3 --psm {psm}", output_type=Output.DICT
     )
@@ -69,4 +69,8 @@ def run_ocr(gray: np.ndarray, *, scale: float = 1.0, lang: str = OCR_LANG, psm: 
             }
         )
     from .refine import refine_words                      # optional second opinion of the trained model (DOCUMIND_OCR_REFINE, off by default)
-    return refine_words(gray, words, scale)
+    words = refine_words(gray, words, scale)
+    if handwriting:                                       # full-page reading of a document that may contain handwriting (never for the training corpus)
+        from .handwriting import rescue
+        words = rescue(gray, words, scale, lang)
+    return words
