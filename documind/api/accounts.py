@@ -296,10 +296,10 @@ def dataset_export(user=Depends(current_user)):
 
 @router.get("/dataset")
 def dataset():
-    """Public: the training report written by documind.training (corpus, scores per field)."""
-    p = REPORTS_DIR / "training_report.json"
+    """Public: the invoice detector's training report (scores per field)."""
+    p = REPORTS_DIR / "invoices_report.json"
     if not p.exists():
-        raise HTTPException(404, "No training report yet: run python -m documind.training.train")
+        raise HTTPException(404, "No training report yet: run python -m documind.training.train_invoices")
     r = json.loads(p.read_text(encoding="utf-8"))
     r.pop("details", None)
     return r

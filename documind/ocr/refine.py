@@ -6,9 +6,7 @@
 
 Tesseract still finds where the words are. For every re-read word the two readings go through documind.ocr.ensemble: when Tesseract was very unsure
 (conf < 50) the trained model decides unless its reading cannot be a word; otherwise the model's reading replaces Tesseract's only if it is clearly better
-(Tesseract's stays when both look fine). A replaced word gets `conf` 95 (the model gives no confidence). The invoice classifier
-(LightGBM) was trained on Tesseract text: after turning this on, check the invoice scores (python -m documind.training.evaluate) and, if you keep it,
-rebuild the corpus and retrain with the same variable set, so training and use see the same kind of OCR.
+(Tesseract's stays when both look fine). A replaced word gets `conf` 95 (the model gives no confidence).
 """
 from __future__ import annotations
 

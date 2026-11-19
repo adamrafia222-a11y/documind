@@ -30,14 +30,14 @@ from .loader import find_samples, read_annotation, select_samples
 DEFAULT_DROP = "TABLE"      # line items are not extracted (see README) -> their words stay background
 
 
-def _cache_path(sample: dict, lang: str, psm: int, augment: bool) -> Path:
-    key = hashlib.md5(f"{sample['image']}|{lang}|{psm}|{augment}".encode()).hexdigest()[:10]
-    return OCR_CACHE_DIR / f"ocr_{lang}_{psm}_{'aug' if augment else 'clean'}" / f"{sample['stem']}_{key}.json"
+def _cache_path(sample: dict, lang: str, psm: int, augment: bool, rebuild: bool = False) -> Path:
+    key = hashlib.md5(f"{sample['image']}|{lang}|{psm}|{augment}|{rebuild}".encode()).hexdigest()[:10]
+    return OCR_CACHE_DIR / f"ocr_{lang}_{psm}_{'aug' if augment else 'clean'}{'_rebuilt' if rebuild else ''}" / f"{sample['stem']}_{key}.json"
 
 
-def _ocr_words(sample: dict, lang: str, psm: int, augment: bool, seed: int) -> tuple[list[dict], int, int]:
+def _ocr_words(sample: dict, lang: str, psm: int, augment: bool, seed: int, rebuild: bool = False) -> tuple[list[dict], int, int]:
     """OCR words (original-image coordinates) + image size. Cached; the cache never stores labels."""
-    cache = _cache_path(sample, lang, psm, augment)
+    cache = _cache_path(sample, lang, psm, augment, rebuild)
     if cache.exists():
         doc = json.loads(cache.read_text(encoding="utf-8"))
         words = [{k: v for k, v in w.items() if k != "label"} for w in doc["words"]]
@@ -50,15 +50,18 @@ def _ocr_words(sample: dict, lang: str, psm: int, augment: bool, seed: int) -> t
     # no deskew in training: it would rotate the image and break the box alignment
     prep = preprocess(img, deskew=False)
     words = run_ocr(prep.image, scale=prep.scale, lang=lang, psm=psm)
+    if rebuild:                                           # Stage B: the same word reconstruction the extractor applies at reading time
+        from ..ocr.reconstruct import reconstruct_words
+        words = reconstruct_words(prep.image, words, prep.scale)
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({"stem": sample["stem"], "width": w, "height": h, "words": words}), encoding="utf-8")
     return words, w, h
 
 
 def _process(args: tuple) -> dict | None:
-    sample, lang, psm, augment, seed, drop = args
+    sample, lang, psm, augment, seed, drop, rebuild = args
     try:
-        words, w, h = _ocr_words(sample, lang, psm, augment, seed)
+        words, w, h = _ocr_words(sample, lang, psm, augment, seed, rebuild)
         annotations, errors = [], []
         for p in sample["annotations"]:
             try:
@@ -76,8 +79,8 @@ def _process(args: tuple) -> dict | None:
 
 
 def build_corpus(samples: list[dict], *, lang: str = OCR_LANG, psm: int = OCR_PSM, workers: int = 4,
-                 augment: bool = False, seed: int = 42, drop: tuple[str, ...] = (DEFAULT_DROP,)) -> list[dict]:
-    jobs = [(s, lang, psm, augment and (i % 2 == 0), seed, tuple(drop)) for i, s in enumerate(samples)]
+                 augment: bool = False, seed: int = 42, drop: tuple[str, ...] = (DEFAULT_DROP,), rebuild: bool = False) -> list[dict]:
+    jobs = [(s, lang, psm, augment and (i % 2 == 0), seed, tuple(drop), rebuild) for i, s in enumerate(samples)]
     docs: list[dict] = []
     if workers <= 1:
         results = (_process(j) for j in jobs)
@@ -130,6 +133,9 @@ def main() -> None:
     ap.add_argument("--lang", default=OCR_LANG)
     ap.add_argument("--psm", type=int, default=OCR_PSM)
     ap.add_argument("--augment", action="store_true", help="make half of the images look like phone photos")
+    ap.add_argument("--reconstruct", action="store_true",
+                    help="OCR reconstruction (Stage B): the trained recognizer re-reads the words and they are put in canonical spelling. The model then remembers it "
+                         "and the extractor applies the same step (needs models/ocr_trocr, see documind/ocr/reconstruct.py)")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -142,9 +148,12 @@ def main() -> None:
     print(f"{len(all_samples)} images with annotations found -> {len(samples)} used, {n_t} templates"
           f"{'  (ALL images)' if len(samples) == len(all_samples) else ''}")
     drop = tuple(x.strip().upper() for x in args.drop_labels.split(",") if x.strip())
+    if args.reconstruct and args.workers > 1:
+        print("[info] --reconstruct loads the recognizer on the GPU: one process (--workers 1) instead of " + str(args.workers))
+        args.workers = 1
 
     docs = build_corpus(samples, lang=args.lang, psm=args.psm, workers=args.workers,
-                        augment=args.augment, seed=args.seed, drop=drop)
+                        augment=args.augment, seed=args.seed, drop=drop, rebuild=args.reconstruct)
     n_words = sum(len(d["words"]) for d in docs)
     n_fields = sum(w["label"] != BACKGROUND_LABEL for d in docs for w in d["words"])
     n_docs_lab = sum(any(w["label"] != BACKGROUND_LABEL for w in d["words"]) for d in docs)
@@ -172,7 +181,7 @@ def main() -> None:
     meta = {"created_at": datetime.now().isoformat(timespec="seconds"), "source": str(args.data),
             "n_documents": len(docs), "n_images_available": len(all_samples), "per_template": args.per_template,
             "n_words": n_words, "n_field_words": n_fields, "ocr_lang": args.lang, "ocr_psm": args.psm,
-            "augment": args.augment, "seed": args.seed, "include_colored": args.include_colored,
+            "augment": args.augment, "reconstruct": args.reconstruct, "seed": args.seed, "include_colored": args.include_colored,
             "dropped_labels": list(drop), "alignment_modes": dict(modes), "words_per_field": dict(classes),
             "templates": sorted({d["template"] for d in docs})}
     save_corpus(docs, meta, args.out)

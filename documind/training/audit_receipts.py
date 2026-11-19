@@ -56,7 +56,7 @@ def main() -> None:
     try:
         from ultralytics import YOLO
     except ImportError:
-        raise SystemExit("Ultralytics is not installed. Run:  pip install -r requirements-receipts.txt")
+        raise SystemExit("Ultralytics is not installed. Run:  pip install -r requirements.txt")
     model = YOLO(a.weights)
     names = {int(k): v for k, v in model.names.items()}
     d = split_dir(Path(a.data), a.split)

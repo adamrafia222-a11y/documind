@@ -19,7 +19,7 @@ import itertools
 import re
 from statistics import median
 
-from ..features.builder import DATE_RE, parse_amount
+from ..features.patterns import DATE_RE, parse_amount
 from .dates import find_dates
 
 _NUM = re.compile(r"^[-(]?[$€£]?\d[\d,. ]*\)?[$€£]?$")
@@ -130,9 +130,23 @@ def _cat(t: str) -> str | None:
     return _CANON[close[0]] if close else None
 
 
+_COARSE = {"desc": "desc", "qty": "qty", "price": "price", "amount": "amount", "taxable": "amount", "id": "id",
+           "tax": "tax", "taxrate": "tax", "taxamt": "tax"}
+
+
+def _hdr_cats(text: str) -> set[str]:
+    """Meaning of one header word, or of a whole header cell ("Unit Price (HT)", "VAT Amount", "Total (TTC)") when the table was read cell by cell."""
+    t = text.strip(" *:.,#|_[]~")
+    if (c := _cat(t)):
+        return {c}
+    if len(t.split()) >= 2 and (k := _COARSE.get(_cell_cat(t))):
+        return {k}
+    return set()
+
+
 def _find_header(lines: list[dict]) -> int | None:
     for i, ln in enumerate(lines):
-        cats = {c for w in ln["words"] if (c := _cat(w["text"])) and c != "id"}
+        cats = {c for w in ln["words"] for c in _hdr_cats(w["text"]) if c != "id"}
         if ("desc" in cats and (len(cats) >= 3 or cats & {"price", "amount"})) or len(cats - {"desc"}) >= 3:
             return i
     return None
@@ -418,12 +432,22 @@ def _is_total_line(head: list[dict], tail: list[dict]) -> bool:
     return "total" in first or len(head) == 1 or any(c in w["text"] for w in head for c in ":%(")
 
 
+def _row_consistent(it: dict, a: float, q: float, p: float) -> bool:
+    """qty x unit price = amount, or (tax tables) qty x unit price + the row's tax amount = amount, or qty x unit price x (1 + rate) = amount."""
+    tol = max(0.011, 0.006 * abs(a))
+    if abs(q * p - a) <= tol:
+        return True
+    tax_amt = [v for k, x in it.items() if re.search(r"tax|vat|gst|tva", k) and not re.search(r"rate|pct", k) and (v := _val(str(x))) is not None]
+    rates = [v for k, x in it.items() if re.search(r"tax|vat|gst|tva", k) and re.search(r"rate|pct", k) and (v := _val(str(x).replace("%", ""))) is not None]
+    return any(abs(q * p + t - a) <= tol for t in tax_amt) or any(abs(q * p * (1 + r / 100.0) - a) <= tol for r in rates)
+
+
 def _score_items(items: list[dict]) -> float:
     s = 0.0
     for it in items:
         a, q, p = _val(it.get("amount", "")), _val(it.get("qty", "")), _val(it.get("unit_price", ""))
         s += 1 if a is not None else -1
-        if None not in (a, q, p) and abs(q * p - a) <= max(0.011, 0.006 * abs(a)):
+        if None not in (a, q, p) and _row_consistent(it, a, q, p):
             s += 2
         if re.search(r"\d[.,]\d{2}\b", it.get("description", "")):
             s -= 2
@@ -812,11 +836,14 @@ def apply_rules(words: list[dict], fields: list[dict], width: float, height: flo
     for r in per:
         pairs = {**r[2], **pairs}
     sub = totals.get("SUB_TOTAL", {}).get("value")
-    items, meta = [], {}
-    for r in per:                                    # the reading whose items add up to the printed subtotal wins
+    items, meta, best = [], {}, None
+    for r in per:                                    # the best table wins: rows that are consistent (qty x price = amount), plus a bonus when they add up to the printed subtotal
         cand = copy.deepcopy(r[0])
-        if cand and (not items or (_check_items(cand, sub).get("matches_subtotal") and not _check_items(copy.deepcopy(items), sub).get("matches_subtotal"))):
-            items, meta = cand, r[3]
+        if not cand:
+            continue
+        score = _score_items(cand) + (3.0 if _check_items(copy.deepcopy(cand), sub).get("matches_subtotal") else 0.0)
+        if best is None or score > best + 1e-9:      # a tie keeps the earlier (cheaper) reading
+            items, meta, best = cand, r[3], score
     if "TAX" in totals and "SUB_TOTAL" in totals and "TOTAL" in totals and not _consistent(totals):
         gap = round(totals["TOTAL"]["value"] - totals["SUB_TOTAL"]["value"] + (totals["DISCOUNT"]["value"] if "DISCOUNT" in totals else 0), 2)
         if gap > 0:                                  # a tax line was read, but its digits are damaged: use total - subtotal
@@ -836,7 +863,10 @@ def apply_rules(words: list[dict], fields: list[dict], width: float, height: flo
     new = []
     for label, r in {**pairs, **totals}.items():
         if not _has(label, fields):
-            new.append({"label": label, "text": r["text"], "confidence": 0.7, "bbox": r["bbox"], "page": page,
+            from .confidence import evidence_confidence, ocr_conf, words_in_box
+            comp = bool(r.get("computed"))
+            new.append({"label": label, "text": r["text"], "confidence": evidence_confidence(None if comp else (words_in_box(words, r["bbox"]) if words and r.get("bbox") else None),
+                                                                                              r.get("value") is not None, labelled=True, computed=comp), "bbox": r["bbox"], "page": page,
                         "source": "computed" if r.get("computed") else "rule"})
     replaced = {f["label"] for f in new}
     merged = [f for f in fields if f["label"] not in replaced] + new
@@ -845,8 +875,11 @@ def apply_rules(words: list[dict], fields: list[dict], width: float, height: flo
     foot_amt = parse_amount(meta["footer"]["amount"]) if meta.get("footer", {}).get("amount") else None
     s_items = [parse_amount(i["amount"]) for i in items if i.get("amount")]
     foot_ok = foot_amt is not None and s_items and None not in s_items and abs(sum(s_items) - foot_amt) <= 0.01
+    bad_rows = any(None not in (a, q, u) and not _row_consistent(it, a, q, u)
+                   for it in items for a, q, u in [(_val(str(it.get("amount", ""))), _val(str(it.get("qty", ""))), _val(str(it.get("unit_price", ""))))])
     return {"fields": merged, "items": items, "items_check": check,
-            "confident": bool(items) and (check.get("matches_subtotal") is True or bool(foot_ok)),
+            # adding up to the printed subtotal is not enough: a single wrong row can equal it by chance (a misread table of one row), so the rows must also be consistent
+            "confident": bool(items) and (check.get("matches_subtotal") is True or bool(foot_ok)) and not bad_rows,
             "table_seen": any(r[3].get("columns") for r in per)}
 
 

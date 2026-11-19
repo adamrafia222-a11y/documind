@@ -209,7 +209,7 @@ def load_model(path: Path = MODEL_PATH):
         try:
             from ultralytics import YOLO
         except ImportError:
-            raise SystemExit("Ultralytics is not installed. Run:  pip install -r requirements-receipts.txt")
+            raise SystemExit("Ultralytics is not installed. Run:  pip install -r requirements.txt")
         if not Path(path).exists():
             raise SystemExit(f"{path} not found. Train it first:  python -m documind.training.train_receipts")
         _model = YOLO(str(path))
@@ -251,6 +251,12 @@ def _open_receipt_image(data: bytes, filename: str) -> tuple[Image.Image, int]:
 def extract_receipt_bytes(data: bytes, filename: str = "receipt", conf: float = 0.25, lang: str | None = None, model=None) -> dict:
     """Picture / PDF bytes -> the same kind of dict as FieldExtractor.extract_bytes (fields, items, row), plus doc_type and columns."""
     img, n_pages = _open_receipt_image(data, filename)
+    orig_w, orig_h = img.width, img.height                                        # the ORIGINAL picture: the screen draws the boxes on it
+    canon = None
+    from ..ocr import reconstruct
+    if reconstruct.pages_active():
+        from ..preprocessing import canonicalize_pil
+        img, canon = canonicalize_pil(img, "receipt")                                   # Stage A: the page cut out, upright, evenly lit
     model = model or load_model()
     r = model.predict(img, imgsz=int(model.overrides.get("imgsz", 960)), conf=conf, verbose=False)[0]
     dets = [(model.names[int(b.cls)], b.xyxy[0].tolist(), float(b.conf)) for b in r.boxes]
@@ -260,6 +266,8 @@ def extract_receipt_bytes(data: bytes, filename: str = "receipt", conf: float = 
     fields.sort(key=lambda f: (f["bbox"][1], f["bbox"][0]))
     items = [{"description": it["description"], "qty": it["qty"], "amount": it["amount"], "confidence": it["box_confidence"], "bbox": it["bbox"], "page": 1}
              for it in got["items"] if it["description"] or it["amount"]]
+    if canon is not None:
+        canon.map_back(fields, items)                     # boxes back on the original picture
     warnings = []
     if not fields:
         warnings.append({"code": "nothing_found", "message": "No store, date or total was detected. Is this really a receipt? Try the invoice type, or a sharper photo."})
@@ -271,7 +279,7 @@ def extract_receipt_bytes(data: bytes, filename: str = "receipt", conf: float = 
     row["N_ITEMS"] = str(len(items))
     row["ITEMS"] = " | ".join((f"{it['qty']} x " if it["qty"] else "") + it["description"] + (f" = {it['amount']}" if it["amount"] else "") for it in items)
     return {"file": filename, "doc_type": "receipt", "warnings": warnings, "n_pages": n_pages,
-            "pages": [{"page": 1, "width": img.width, "height": img.height, "size": [img.width, img.height]}],
+            "pages": [{"page": 1, "width": orig_w, "height": orig_h, "size": [orig_w, orig_h], **({"canonical_steps": canon.steps} if canon is not None else {})}],
             "fields": fields, "items": items, "items_check": {}, "row": row, "columns": RECEIPT_COLUMNS}
 
 

@@ -104,6 +104,10 @@ def quick_text(img: np.ndarray, max_side: int = 1400) -> str:
 def detect_type(data: bytes, filename: str = "document", available: tuple[str, ...] | list[str] = TYPES) -> dict:
     """-> {"doc_type", "confidence" (0.5..1), "scores", "reason"}; only types in `available` can be chosen."""
     img = _first_page(data, filename)
+    from ..ocr import reconstruct
+    if reconstruct.pages_active():                                  # a tilted / rotated photo is judged as the flat page it is (shape and text), like the extractors will read it
+        from ..preprocessing import canonicalize
+        img = canonicalize(img, "auto").image
     h, w = img.shape[:2]
     aspect = h / max(w, 1)
     scores = score_types(quick_text(img), aspect)

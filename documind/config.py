@@ -35,7 +35,6 @@ CORPUS_PATH = PROCESSED_DIR / "corpus.jsonl"
 
 MODELS_DIR = Path(os.getenv("DOCUMIND_MODELS_DIR", BASE_DIR / "models"))
 REPORTS_DIR = Path(os.getenv("DOCUMIND_REPORTS_DIR", BASE_DIR / "reports"))
-MODEL_PATH = Path(os.getenv("DOCUMIND_MODEL_PATH", MODELS_DIR / "field_extractor.joblib"))
 
 # ---------------------------------------------------------------------- OCR
 # Windows example: C:\Program Files\Tesseract-OCR\tesseract.exe
@@ -50,6 +49,5 @@ OCR_PSM = int(os.getenv("OCR_PSM", "6"))
 
 # ---------------------------------------------------------------- model / API
 BACKGROUND_LABEL = "O"          # words that belong to no annotated field
-MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.5"))  # below -> word is ignored
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 PDF_DPI = int(os.getenv("PDF_DPI", "200"))

@@ -6,7 +6,7 @@
     python -m documind.training.train_cheques --eval-only                       # re-score models/cheques_yolo.pt on val and test
 
 Same code as the receipts (documind.training.train_receipts): same score tables (precision / recall / mAP50 / found_rate per class on val AND test,
-reports/cheques_report.json), same target check (--target 0.90, printed whether it is reached or not), same requirements (requirements-receipts.txt:
+reports/cheques_report.json), same target check (--target 0.90, printed whether it is reached or not), same requirements (requirements.txt:
 Ultralytics + PyTorch, a GPU is strongly advised). Curves and confusion matrix: reports/cheques_runs/<name>/.
 
 What is different from the receipts:

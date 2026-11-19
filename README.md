@@ -1,11 +1,12 @@
 # DocuMind AI backend - picture -> CSV
 
 ```
-data/raw  ->  [1 prepare: pre-processing + OCR + labels]  ->  data/processed  ->  [2 train]  ->  models/
+data/raw  ->  [1 prepare: annotations -> YOLO labels]  ->  data/processed  ->  [2 train YOLO]  ->  models/
                                                                                                    |
-image / PDF  ->  [3 API or CLI: pre-processing -> OCR -> LightGBM -> fields]  ->  CSV  <-----------+
+image / PDF  ->  [3 API or CLI: pre-processing -> YOLO boxes -> OCR of each box -> fields]  ->  CSV <-+
 ```
-LightGBM does not read pictures: it classifies each OCR word (vendor, date, total... or "O" = nothing).
+Every document type works the same way: a YOLO detector draws one box on the VALUE of each field, then each box is read by the OCR engines.
+The invoice line items come from a rules reader (documind.inference.postprocess).
 
 ## Folder structure
 ```
@@ -13,21 +14,21 @@ documind_backend/
 ├── data/
 │   ├── raw/          original datasets (put the unzipped FATURA folder here, never modify)
 │   ├── interim/      OCR cache (can be deleted at any time)
-│   ├── processed/    corpus.jsonl = OCR words + labels, ready for training
+│   ├── processed/    the cleaned YOLO datasets (invoices_yolo, receipts_yolo ...)
 │   └── toy/          tiny fake dataset to test the pipeline (generated)
 ├── documind/                     the code, one folder per stage
 │   ├── config.py                 folders + settings (.env)
-│   ├── preprocessing/            image.py (deskew, resize, shadows...), pdf.py, augment.py
-│   ├── ocr/                      engine.py (Tesseract)
-│   ├── features/                 layout.py (rows), builder.py (numeric + TF-IDF features)
-│   ├── data/                     loader.py, labeling.py, corpus.py, prepare.py (STEP 1), inspect_dataset.py
-│   ├── training/                 train.py (STEP 2), splits.py, evaluate.py
-│   ├── inference/                extractor.py, grouping.py, export.py, cli.py
+│   ├── preprocessing/            image.py (deskew, resize, shadows...), canonical.py (picture reconstruction), pdf.py, augment.py
+│   ├── ocr/                      engine.py (Tesseract), trocr.py, handwriting.py, ensemble.py, reconstruct.py
+│   ├── features/                 layout.py (rows), patterns.py (dates, amounts)
+│   ├── data/                     loader.py, labeling.py, prepare_invoices.py (STEP 1), inspect_dataset.py ...
+│   ├── training/                 train_invoices.py (STEP 2), splits.py, compare_reconstruct.py ...
+│   ├── inference/                extractor.py, invoice_yolo.py, postprocess.py (line items), export.py, cli.py
 │   └── api/                      main.py (FastAPI)
-├── models/           field_extractor.joblib (trained model)
-├── reports/          training_report.json (F1 per field)
+├── models/           invoices_yolo.pt, receipts_yolo.pt, cheques_yolo.pt, contracts_yolo.pt
+├── reports/          invoices_report.json (scores per field) ...
 ├── scripts/          make_toy_data.py
-├── tests/            unit tests + end-to-end test
+├── tests/            unit tests
 ├── .env.example      copy to .env (Tesseract path, OCR language)
 └── requirements.txt
 ```
@@ -41,41 +42,25 @@ documind_backend/
 4. Copy `.env.example` to `.env` and set `TESSERACT_CMD` (Windows).
 
 ## Run (all commands from the project root)
-**Test with fake data first (3 minutes)**
+**Invoices with FATURA (YOLO detector)**
+1. Download FATURA.zip (https://zenodo.org/records/10371464), unzip it into `data/raw/FATURA/`
+2. Check that the labels are understood (tests every box convention, saves overlay pictures in `reports/`):
+   `python -m documind.data.inspect_dataset --data data/raw/FATURA --check`
+3. `pip install -r requirements.txt` (once, in the environment with the GPU build of PyTorch)
+4. STEP 1 prepare: `python -m documind.data.prepare_invoices --fatura data/raw/FATURA`
+   * FATURA annotations become YOLO label files, split by TEMPLATE (`--split random` = by invoice); `--max-images 200` for a quick trial
+   * `--photo-copies 2` adds 2 phone-photo-like copies (uneven light, blur, noise, JPEG, lost resolution) of every TRAINING page, same boxes: use it when your real invoices are photos
+     and the confidence is low (the model learned clean renders). Val and test stay untouched, so the scores stay honest
+   * `--include-colored` also uses the coloured-background copy of every invoice; `--keep-table` keeps the TABLE box as a class
+   * then the shared checks run: look at `reports/invoices_preview/*.png` (boxes drawn on the pictures) and `reports/invoices_prepare_report.txt`
+5. STEP 2 train: `python -m documind.training.train_invoices` (about 60 epochs; writes `models/invoices_yolo.pt` and `reports/invoices_report.json`)
+6. STEP 3 try: `python -m documind.inference.invoice_yolo invoice.jpg`
+
+**Test the code with fake data first (no GPU)**
 ```
 python scripts/make_toy_data.py
-python -m documind.data.prepare --data data/toy --per-template 12 --workers 2
-python -m documind.training.train --baseline
+python -m documind.data.prepare_invoices --fatura data/toy --raw-out data/raw/invoices_toy --out data/processed/invoices_toy --workers 1
 ```
-
-**Real training with FATURA**
-1. Download FATURA.zip (https://zenodo.org/records/10371464), unzip it into `data/raw/FATURA/`
-2. Check that the labels are understood (OCRs 3 images, tests every box convention, saves overlay pictures in `reports/`):
-   `python -m documind.data.inspect_dataset --data data/raw/FATURA --check`
-3. STEP 1 prepare - **all invoices by default** (FATURA: 10 000 = 50 templates x 200):
-   `python -m documind.data.prepare --data data/raw/FATURA --workers 4`
-   * first run: about 35 min for 10 000 images with 4 workers (OCR is cached, later runs take seconds)
-   * quicker trial: `--per-template 40` (2 000 images). `--per-template 0` (default) = everything
-   * `--include-colored` also uses the coloured-background copy of every invoice (x2 images)
-   * `--augment` adds phone-photo-like copies, `--drop-labels ""` keeps the TABLE class (dropped by default)
-   * it must end with `Corpus saved`. If it stops with "No OCR word was matched", the corpus is NOT replaced:
-     run step 2 and send `data/interim/alignment_debug.json`
-4. STEP 2 train: `python -m documind.training.train --baseline`
-   (built chunk by chunk: about 1.2 GB RAM for 10 000 documents)
-
-The prepare step prints which box convention it detected (x,y,w,h / x0,y0,x1,y1 / 0-1000 / 0-1) and the number of words
-per field. Check that every field you expect appears there before training.
-
-**Check the data, then train (recommended order)**
-```
-C:\ai_env\Scripts\activate                      # the venv that has lightgbm / scikit-learn (NOT "base")
-python -m documind.data.audit --data data/raw/FATURA --n 60   # are the labels on the right words?
-python -m documind.training.train --position none          # or --position full ; the notebook compares both
-```
-or open `notebooks/train_documind.ipynb` (kernel = ai_env) and run it top to bottom: audit, position vs
-no-position comparison, final model, per-template scores, save. A model trained with an older version of the
-code must be retrained (the feature set changed).
-`python scripts/make_synthetic_corpus.py` builds a fake multi-template corpus in seconds to test the code without OCR.
 
 **Use the model**
 ```
@@ -91,7 +76,7 @@ API: `POST /extract?format=json|csv&doc_type=auto|invoice|receipt` (one file), `
 Data: made by `scripts/generate_receipts.py` (your generator; 13 classes, boxes on the VALUES, exact labels + `ground_truth.jsonl`):
 store_name, address, phone, date, time, receipt_number, item_name, item_qty, item_price, subtotal, tax, total, payment_method.
 ```
-pip install -r requirements-receipts.txt                  # once, in the environment with the GPU build of PyTorch
+pip install -r requirements.txt                  # once, in the environment with the GPU build of PyTorch
 python scripts/generate_receipts.py --n 10000 --out data/raw/receipts            # 8000 train / 1000 val / 1000 test  (--currency EUR, --seed, --preview 10)
 python -m documind.data.prepare_receipts                   # STEP 1: reads data/raw/receipts (images/<split> layout and its data.yaml, or <split>/images),
                                                            #   checks labels, finds leaks -> data/processed/receipts_yolo/ , reports/receipts_preview/ (LOOK at it)
@@ -161,7 +146,7 @@ borrower 15/16, IBAN 12/16 (long digit strings: the IBAN length check and the pa
 The detectors say WHERE a value is, the OCR says WHAT is written there. Tesseract is general-purpose: it drops accents, mixes 0 / 9 / 8, loses
 capitals and handwriting. This module fine-tunes a recognition model (TrOCR) on text-line crops cut out of **receipts**, **cheques**, **contracts** and **FATURA**.
 ```
-pip install -r requirements-ocr.txt                         # transformers, sentencepiece, accelerate (next to your GPU build of PyTorch)
+pip install -r requirements.txt                         # transformers, sentencepiece, accelerate (next to your GPU build of PyTorch)
 python -m documind.data.prepare_ocr                         # STEP 1: crops + transcriptions -> data/processed/ocr_crops ; prints Tesseract's score (the number to beat)
 python -m documind.training.train_ocr --smoke               # 1 minute: checks that everything runs
 python -m documind.training.train_ocr                       # STEP 2: fine-tune microsoft/trocr-small-printed, 4 epochs, best epoch -> models/ocr_trocr
@@ -186,6 +171,45 @@ Notebook version: `notebooks/train_ocr_trocr.ipynb`. Options: `--base microsoft/
   accents and capitals, the long handwritten amount in words, the MICR line and single digits. Run `prepare_ocr` (it prints these numbers for YOUR data) and
   `evaluate_ocr` to see what the training really changes.
 * Careful: val / test crops come from the same generators as the training crops, so a very low error says the model learned these documents. Try real pictures.
+
+### Invoices (YOLO detector, like the other types)
+
+A YOLO detector draws one box on the VALUE of each field (TOTAL, DATE, NUMBER, SELLER_ADDRESS ...), then every box is read by the OCR engines (Tesseract + the OCR model +
+the handwriting model, the better reading is kept). The line items come from the rules reader (the table is not a detector class by default). The commands are in "Run" above.
+The upload, the history and the CSV use `models/invoices_yolo.pt` as soon as it exists (`INVOICE_MODEL_PATH` in `.env` to change the file).
+FATURA has a few dozen layouts; with the default template split, val and test are layouts never seen in training (the honest score).
+Measure the picture reconstruction on your files: `python -m documind.training.compare_reconstruct --data data/raw/FATURA --n 60 --photo`.
+
+**Fields the detector misses, and checks** (`documind/inference/fieldrules.py`, `invoice_checks.py`)
+The detector learned the FATURA templates. On another layout or language it finds only some fields, so the labels printed on the page ("Date d'échéance :", "Bill To", "Net à payer",
+"Arrêtée la présente facture à la somme de ...") are read in the page's words, in French and English, to fill the fields it did not find (marked `source: rules` and a lower confidence;
+a detector box is never overridden, and nothing is invented when there is no label). Then the invoice gets `checks` like the cheques and contracts, shown on the Read page and in the API result:
+`total_arithmetic` (subtotal + tax - discount = total), `items_sum`, `rows_arithmetic` (quantity x unit price (+ tax) = amount on every row), `tax_rate_consistent`, `dates_valid`,
+`due_after_issue`, `amount_in_words` (French or English), `amount_due_vs_total`, `required_fields`, `email_valid`, `iban_valid`. True / False / not checked; a failed check becomes a warning
+and the CSV has a `CHECKS` column ("7/9 passed; failed: ..."). The confidence of a field found by rules is not a fixed number: it comes from the OCR confidence of its words, the validity of its format (a real date, a well-formed e-mail ...) and the checks (a passing check raises the fields it confirms, a failing one lowers them): `documind/inference/confidence.py`. The line-item reader also accepts a ruled table whose header is white on a dark band and whose page has a frame or a shadow.
+
+### OCR reconstruction (picture fixed on every upload, no retraining)
+
+When a picture is uploaded it is rebuilt in the form the models were trained on (clean, upright, flat page, clean words) BEFORE the models read it.
+The dataset and the trained models are not touched.
+
+| Stage | Where | What it does |
+|---|---|---|
+| A. picture | `documind/preprocessing/canonical.py` | cuts the page out, turns it upright (only when Tesseract is sure), flattens uneven light; boxes are mapped back to the original upload |
+| B. words | `documind/ocr/reconstruct.py` | a pretrained OCR model (`microsoft/trocr-base-printed`, or your `models/ocr_trocr` if you trained it) re-reads the doubtful chunks Tesseract found (same `ensemble.choose` rules), then one canonical spelling (`2O25` -> `2025`) |
+| C. preview | `render_clean()` | redraws the words on a clean page, to look at what was read |
+
+The first upload downloads the pretrained model once (~1.3 GB, needs `pip install -r requirements.txt`); then it is cached. Without torch or internet the step falls back to Tesseract alone with a warning.
+
+```powershell
+python -m documind.ocr.reconstruct photo.jpg --doc receipt      # look at it: reports/reconstruct has the rectified page, the rebuilt page, words.json
+```
+
+`.env`: `DOCUMIND_RECONSTRUCT=auto|on|off` (default `auto`: stage A only; stage B is opt-in because on 60 FATURA invoices it scored 33.1 % against 36.1 % without), `RECONSTRUCT_OCR_MODEL` (`microsoft/trocr-small-printed` is 3x faster), `DOCUMIND_PRETRAINED_OCR=off` to forbid the download.
+Optional: `prepare --reconstruct` then `train` makes the invoice classifier learn from the same kind of words; you do not need it.
+Contracts get the same two stages (stage B only with `DOCUMIND_RECONSTRUCT=on`): the page is straightened, and the full-page text reader (`contract_text.read_contract_text`) re-reads the doubtful words with the OCR model before it looks for the amount, rate, duration and dates in the sentences. Nothing to retrain.
+Contracts: `python -m documind.training.compare_reconstruct --type contract --data data/raw/contracts --n 60 --photo`.
+Measure the gain on your own files: `python -m documind.training.compare_reconstruct --data data/raw/FATURA --n 60 --photo` (runs the real pipeline three ways: off, auto = picture only, on = picture + words).
 
 ### Front end with Streamlit (sign in, dashboard, history, profile)
 
@@ -222,7 +246,7 @@ every animation defined), not by eye in every browser.
 ### Several document types in one app (invoice + receipt + cheque + contract)
 Each type keeps its own model and its own CSV columns; they are never merged.
 ```
-picture / PDF -> router (page shape + key words, or the type chosen in the web page) -> invoice extractor (LightGBM)  -> invoices.csv
+picture / PDF -> router (page shape + key words, or the type chosen in the web page) -> invoice extractor (YOLO+OCR+rules) -> invoices.csv
                                                                                     -> receipt extractor (YOLO+OCR) -> receipts.csv
                                                                                     -> cheque extractor (YOLO+OCR+checks) -> cheques.csv
                                                                                     -> contract extractor (YOLO+OCR+checks) -> contracts.csv
@@ -236,11 +260,10 @@ picture / PDF -> router (page shape + key words, or the type chosen in the web p
 * New type later (ID card, bank statement ...): write an extractor that returns the same kind of dict and add it in `documind/inference/service.py`.
 
 ## Why two steps (prepare, then train)?
-OCR is slow. Step 1 runs it once and saves `data/processed/corpus.jsonl`; you can then retrain
-and tune LightGBM many times in seconds without redoing OCR.
+Step 1 turns the annotation files into clean YOLO datasets and checks them once (labels, duplicates, pictures found in two splits); you can then retrain
+the detector with other settings without redoing it.
 
 ## Honest limits
 * FATURA is synthetic and English: expect lower scores on real or French invoices. Keep 30-50 real
   anonymised documents as a final test; for French set `OCR_LANG=fra` and prepare/retrain on French data.
-* Line items (tables) are not extracted, only header fields.
-* If `--baseline` beats LightGBM, trust the numbers and report both.
+* The detector ignores the table on purpose (the TABLE class is dropped in training). Line items come from a separate rules reader (`USE_RULES=1`, the default): it finds the table by its header or by its rows of amounts. It can miss a table on a blurry or very small picture; the result then has `items: []` and `N_ITEMS` = 0.

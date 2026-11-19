@@ -4,9 +4,8 @@ import numpy as np
 
 from documind.data.labeling import assign_labels
 from documind.data.loader import parse_annotation, template_of
-from documind.features import Featurizer, assign_lines
+from documind.features import assign_lines
 from documind.inference.export import fields_to_row, rows_to_csv
-from documind.inference.grouping import group_fields
 
 
 def word(text, x0, y0, x1, y1, label="O"):
@@ -31,22 +30,9 @@ def test_assign_labels_prefers_overlapping_box():
     assert [w["label"] for w in words] == ["O", "TOTAL"]
 
 
-def test_lines_and_features():
-    words = [word("Invoice", 10, 10, 80, 30), word("No:", 90, 11, 120, 31), word("INV-123", 130, 10, 220, 30),
-             word("Date", 10, 60, 60, 80), word("01/02/2024", 70, 60, 180, 80)]
-    layout = assign_lines(words)
-    assert len(layout.lines) == 2 and layout.line_of == [0, 0, 0, 1, 1]
-    docs = [{"width": 300.0, "height": 400.0, "words": words}] * 3
-    X = Featurizer().fit(docs).transform(docs)
-    assert X.shape[0] == 15
-
-
-def test_group_and_csv():
-    words = [word("Atlas", 10, 10, 60, 30), word("Supplies", 70, 10, 150, 30), word("Date:", 10, 80, 60, 100),
-             word("01/02/2024", 70, 80, 180, 100)]
-    labels = ["VENDOR", "VENDOR", "O", "DATE"]
-    fields = group_fields(words, labels, np.array([0.9, 0.8, 0.9, 0.95]), page=1)
-    assert [(f["label"], f["text"]) for f in fields] == [("VENDOR", "Atlas Supplies"), ("DATE", "01/02/2024")]
+def test_fields_to_csv():
+    fields = [{"label": "VENDOR", "text": "Atlas Supplies", "confidence": 0.9, "bbox": [10, 10, 150, 30], "page": 1},
+              {"label": "DATE", "text": "01/02/2024", "confidence": 0.95, "bbox": [70, 80, 180, 100], "page": 1}]
     row = fields_to_row(fields)
     csv_bytes = rows_to_csv([{"file": "a.jpg", **row}], ["file", "VENDOR", "DATE"])
     assert csv_bytes.decode("utf-8-sig").splitlines() == ["file,VENDOR,DATE", "a.jpg,Atlas Supplies,01/02/2024"]
@@ -140,54 +126,11 @@ def test_uses_all_images_by_default_and_keeps_one_copy_of_coloured_duplicates(tm
 
 # ---------------------------------------------------------------- features v2 / audit / metrics
 def test_parse_amount():
-    from documind.features.builder import parse_amount
+    from documind.features.patterns import parse_amount
     assert parse_amount("$1,234.50") == 1234.5
     assert parse_amount("1.234,50") == 1234.5
     assert parse_amount("12,5") == 12.5
     assert parse_amount("abc") is None
-
-
-def test_structure_blocks_and_amount_rank():
-    from documind.features.builder import NUM_FEATURE_NAMES, build_table
-    words = [word("Bill", 10, 10, 50, 30), word("To:", 60, 10, 90, 30), word("Alice", 10, 40, 60, 60),
-             word("Main", 10, 70, 60, 90), word("Total:", 400, 10, 460, 30), word("$50.00", 480, 10, 560, 30),
-             word("Tax:", 400, 40, 440, 60), word("$5.00", 480, 40, 540, 60)]
-    rows, texts, _ = build_table(words, 600.0, 800.0)
-    ix = {n: i for i, n in enumerate(NUM_FEATURE_NAMES)}
-    assert rows[2, ix["blk_n_lines"]] == 3 and rows[2, ix["blk_line_idx"]] == 1      # "Alice" is line 2 of the address block
-    assert texts["bhead"][3].startswith("bill to")                                    # block header is the key of the address
-    assert rows[5, ix["amt_rank_desc"]] == 0 and rows[7, ix["amt_rank_desc"]] == 1     # the total is the largest amount
-
-
-def test_featurizer_position_none_drops_page_position_columns():
-    words = [word("Invoice", 10, 10, 80, 30), word("No:", 90, 11, 120, 31), word("INV-123", 130, 10, 220, 30),
-             word("Date", 10, 60, 60, 80), word("01/02/2024", 70, 60, 180, 80)]
-    docs = [{"width": 300.0, "height": 400.0, "words": words}] * 3
-    full = Featurizer("full").fit(docs)
-    none = Featurizer("none").fit(docs)
-    assert "ncy" in full.feature_names() and "ncy" not in none.feature_names()
-    assert full.transform(docs).shape[0] == none.transform(docs).shape[0] == 15
-
-
-def test_macro_f1_ignores_absent_fields():
-    import numpy as np
-    from documind.training.evaluate import evaluate
-
-    class M:
-        def predict(self, X):
-            return np.array([0, 1, 1])
-    r = evaluate("t", M(), None, np.array([0, 1, 1]), ["O", "A", "B"], verbose=False)   # B never occurs in y
-    assert r["macro_f1_fields"] == 1.0 and r["macro_f1_all_fields"] == 0.5   # B absent: 0 in the strict number only
-    r = evaluate("t", M(), None, np.array([0, 1, 2]), ["O", "A", "B"], verbose=False)
-    assert 0 < r["macro_f1_fields"] < 1.0
-
-
-def test_label_purity_flags_wrong_labels():
-    from documind.data.audit import label_purity
-    good = {"template": "t", "words": [{**word("01/02/2024", 0, 0, 1, 1), "label": "DATE"}]}
-    bad = {"template": "t", "words": [{**word("hello", 0, 0, 1, 1), "label": "DATE"}]}
-    assert label_purity([good]).iloc[0]["ok"] == "OK"
-    assert label_purity([bad]).iloc[0]["ok"] == "SUSPICIOUS"
 
 
 def test_alignment_handles_bottom_left_origin_like_fatura_original_format(tmp_path):
@@ -202,17 +145,9 @@ def test_alignment_handles_bottom_left_origin_like_fatura_original_format(tmp_pa
 
 
 def test_date_regex_knows_fatura_dates():
-    from documind.features.builder import DATE_RE
+    from documind.features.patterns import DATE_RE
     for ok in ("20-Mar-2008", "16-Oct-2016", "20/03/2008", "2008-03-20", "Mar-20-2008"):
         assert DATE_RE.match(ok), ok
     for no in ("Date:", "Total", "12-345", "20-Mar"):
         assert not DATE_RE.match(no), no
 
-
-def test_label_purity_is_judged_per_document_not_per_word():
-    from documind.data.audit import label_purity
-    # a DATE box also holds the word "Date:" -> only 50 % of the words are date-like, and that is fine
-    doc = {"template": "t", "words": [{**word("Date:", 0, 0, 1, 1), "label": "DATE"},
-                                      {**word("20-Mar-2008", 2, 0, 3, 1), "label": "DATE"}]}
-    row = label_purity([doc]).iloc[0]
-    assert row["ok"] == "OK" and row["%docs hit"] == 100.0

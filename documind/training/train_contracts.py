@@ -7,7 +7,7 @@
     python -m documind.training.train_contracts --eval-only                     # re-score models/contracts_yolo.pt on val and test
 
 Same code as the receipts and cheques (documind.training.train_receipts): same score tables (precision / recall / mAP50 / found_rate per class on val AND
-test, reports/contracts_report.json), same target check (--target 0.90), same requirements (requirements-receipts.txt). Curves: reports/contracts_runs/<name>/.
+test, reports/contracts_report.json), same target check (--target 0.90), same requirements (requirements.txt). Curves: reports/contracts_runs/<name>/.
 
 What is different:
   * the page is a full A4 (up to 1800 px) with 20 px text and values that are only a few words long: imgsz 1280 (batch 4 fits an 8 GB GPU); if the small

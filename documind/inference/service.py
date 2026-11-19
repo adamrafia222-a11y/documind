@@ -11,14 +11,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config import MODEL_PATH
 from .export import rows_to_csv
 from .extractor import FieldExtractor, ModelNotFound
 from .router import TYPES, detect_type
 
 CSV_NAMES = {"invoice": "invoices.csv", "receipt": "receipts.csv", "cheque": "cheques.csv", "contract": "contracts.csv"}
 LABELS = {"invoice": "Invoice", "receipt": "Receipt", "cheque": "Cheque", "contract": "Contract"}
-TRAIN_CMD = {"invoice": "python -m documind.training.train", "receipt": "python -m documind.training.train_receipts", "cheque": "python -m documind.training.train_cheques",
+TRAIN_CMD = {"invoice": "python -m documind.data.prepare_invoices --fatura data/raw/FATURA, then python -m documind.training.train_invoices", "receipt": "python -m documind.training.train_receipts", "cheque": "python -m documind.training.train_cheques",
              "contract": "python -m documind.training.train_contracts"}
 
 
@@ -28,8 +27,8 @@ class DocumentService:
 
     # ------------------------------------------------------------------ what is installed
     def available(self) -> dict[str, bool]:
-        from . import cheques, contracts, receipts
-        return {"invoice": Path(MODEL_PATH).exists(), "receipt": receipts.model_available(), "cheque": cheques.model_available(), "contract": contracts.model_available()}
+        from . import cheques, contracts, invoice_yolo, receipts
+        return {"invoice": invoice_yolo.model_available(), "receipt": receipts.model_available(), "cheque": cheques.model_available(), "contract": contracts.model_available()}
 
     @property
     def invoice_loaded(self) -> bool:

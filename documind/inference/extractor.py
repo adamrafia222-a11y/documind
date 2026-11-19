@@ -4,16 +4,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import joblib
 import cv2
 import numpy as np
 
 from . import tableprep
-from ..config import BACKGROUND_LABEL, MIN_CONFIDENCE, MODEL_PATH, OCR_LANG, OCR_PSM, PDF_DPI
-from ..ocr import run_ocr
-from ..preprocessing import remove_table_lines, decode_image, pdf_to_images, preprocess
+from ..config import OCR_LANG, OCR_PSM, PDF_DPI
+from ..ocr import reconstruct, run_ocr
+from ..preprocessing import canonicalize, remove_table_lines, decode_image, pdf_to_images, preprocess
 from .export import csv_columns, fields_to_row, rows_to_csv
-from .grouping import group_fields
+from . import fieldrules, invoice_checks, invoice_yolo
 from .postprocess import _score_items, apply_rules, items_to_text
 
 
@@ -22,21 +21,19 @@ class ModelNotFound(RuntimeError):
 
 
 class FieldExtractor:
-    def __init__(self, model_path: str | Path = MODEL_PATH, lang: str | None = None, psm: int | None = None,
-                 min_confidence: float = MIN_CONFIDENCE) -> None:
-        model_path = Path(model_path)
-        if not model_path.exists():
-            raise ModelNotFound(f"Model file not found: {model_path}. Train first: python -m documind.data.prepare --data data/raw/FATURA, then python -m documind.training.train")
-        bundle = joblib.load(model_path)
-        self.featurizer = bundle["featurizer"]
-        self.model = bundle["model"]
-        self.classes: list[str] = bundle["classes"]
-        self.meta: dict = bundle.get("meta", {})
+    def __init__(self, lang: str | None = None, psm: int | None = None) -> None:
+        """The invoice fields come from the YOLO detector (models/invoices_yolo.pt), like receipts, cheques and contracts; the line items from the rules reader."""
+        if not invoice_yolo.model_available():
+            raise ModelNotFound(f"Invoice detector not found: {invoice_yolo.MODEL_PATH}. Train it: python -m documind.data.prepare_invoices --fatura data/raw/FATURA, "
+                                "then python -m documind.training.train_invoices")
+        self.yolo = invoice_yolo.load_model()
+        self.classes: list[str] = [str(n).upper() for _, n in sorted(self.yolo.names.items())]
+        self.meta: dict = {"backend": "yolo", "model": str(invoice_yolo.MODEL_PATH), "imgsz": int(self.yolo.overrides.get("imgsz", 1280))}
         self.lang = lang or OCR_LANG        # not the language saved at training time (FATURA = "eng"): French invoices need "eng+fra"
-        self.psm = psm or self.meta.get("ocr_psm", OCR_PSM)
-        self.min_confidence = min_confidence
+        self.psm = psm or OCR_PSM
         self.rules_psm = int(os.getenv("RULES_PSM", "4"))   # the table / totals rules read the page with psm 4 (columns)
         self.use_rules = os.getenv("USE_RULES", "1") != "0"
+        self.rebuild_words = reconstruct.words_active()               # Stage B (words re-read by the OCR model) only with DOCUMIND_RECONSTRUCT=on
 
     @property
     def columns(self) -> list[str]:
@@ -63,7 +60,11 @@ class FieldExtractor:
         out = [w for w in page_words if not (bx0 / s - 3 <= (w["x0"] + w["x1"]) / 2 <= bx1 / s + 3 and by0 / s - 3 <= (w["y0"] + w["y1"]) / 2 <= by1 / s + 3)]
         for x0, y0, x1, y1 in cells:
             crop = g[y0 + m:y1 - m, x0 + m:x1 - m]
-            if crop.size == 0 or float((crop < 150).mean()) < 0.002:
+            if crop.size == 0:
+                continue
+            if float(crop.mean()) < 110 and float((crop > 170).mean()) > 0.002:         # white text on a dark band (the header row): read it as dark text on white
+                crop = 255 - crop
+            if float((crop < 150).mean()) < 0.002:
                 continue
             cf = float(np.clip(70.0 / crop.shape[0], 1.0, 3.0))
             if cf > 1.05:
@@ -116,23 +117,24 @@ class FieldExtractor:
 
     # ------------------------------------------------------------------ pages
     def extract_image(self, img: np.ndarray, page: int = 1) -> dict:
+        ow, oh = img.shape[1], img.shape[0]                      # the ORIGINAL picture: the screen draws the boxes on it
+        canon = canonicalize(img, "invoice") if reconstruct.pages_active() else None
+        if canon is not None and not canon.identity:
+            img = canon.image                                    # Stage A: the page cut out, upright, evenly lit (the form the model was trained on)
+        else:
+            canon = None
         h, w = img.shape[:2]
         prep = preprocess(img)                                   # full pre-processing (with deskew)
         words = run_ocr(prep.image, scale=prep.scale, lang=self.lang, psm=self.psm, handwriting=True)
-        if not words:
-            return {"page": page, "n_words": 0, "mean_ocr_conf": 0.0, "fields": [], "deskew_angle": prep.angle, "size": [int(w), int(h)]}
-
-        doc = {"width": float(w), "height": float(h), "words": words}
-        proba = self.model.predict_proba(self.featurizer.transform([doc]))
-        best = proba.argmax(axis=1)
-        labels = [self.classes[b] for b in best]
-        conf = proba.max(axis=1)
-        for i, (lab, c) in enumerate(zip(labels, conf)):
-            if lab != BACKGROUND_LABEL and c < self.min_confidence:
-                labels[i] = BACKGROUND_LABEL
-        fields = group_fields(words, labels, conf, page)
+        if self.rebuild_words:
+            words = reconstruct.reconstruct_words(prep.image, words, prep.scale)      # Stage B: re-read by the trained recognizer, canonical spelling
+        # one box per field (like the receipts, cheques, contracts), each box read by the OCR engines
+        from PIL import Image
+        fields = invoice_yolo.fields_from_dets(Image.fromarray(img[:, :, ::-1].copy()), invoice_yolo.detect(self.yolo, img), page, self.lang)
+        if words:                                                # the labels printed on the page fill the fields the detector did not find
+            fields = sorted(fields + fieldrules.fill_missing(fields, words, page, self.classes, (float(w), float(h))), key=lambda f: (f["bbox"][1], f["bbox"][0]))
         items, items_check = [], {}
-        if self.use_rules:
+        if self.use_rules and words:
             low = float(np.mean([x["conf"] for x in words])) < 50          # unreadable scan: more readings will not help
             readings: list[list[dict]] = []
             post = None
@@ -154,9 +156,12 @@ class FieldExtractor:
                 post = max(cands, key=lambda t: t[:3])[3]
             if post:
                 fields, items, items_check = post["fields"], post["items"], post["items_check"]
-        return {"page": page, "n_words": len(words), "mean_ocr_conf": float(np.mean([x["conf"] for x in words])),
+        if canon is not None:
+            canon.map_back(fields, items)                        # boxes back on the original picture
+        return {"page": page, "n_words": len(words), "mean_ocr_conf": float(np.mean([x["conf"] for x in words])) if words else 0.0,
                 "fields": fields, "items": items, "items_check": items_check, "deskew_angle": prep.angle,
-                "size": [int(w), int(h)]}
+                "size": [int(ow), int(oh)], **({"canonical_steps": canon.steps} if canon is not None else {}),
+                "reconstructed_words": sum(1 for x in words if x.get("refined"))}
 
     def extract_bytes(self, data: bytes, filename: str = "document") -> dict:
         is_pdf = filename.lower().endswith(".pdf") or data[:5] == b"%PDF-"
@@ -182,15 +187,20 @@ class FieldExtractor:
         if items and chk.get("matches_subtotal") is False:
             warnings.append({"code": "items_mismatch", "message":
                              f"The line items add up to {chk.get('items_sum')} but the invoice prints a different subtotal: check the amounts."})
+        inv = invoice_checks.run_checks(fields, items, chk)
+        invoice_checks.adjust_confidence(fields, inv["checks"])          # the checks are evidence: confirmed fields go up, contradicted ones go down
+        seen_items = any(w["code"] == "items_mismatch" for w in warnings)
+        warnings += [w for w in inv["warnings"] if not (seen_items and w.get("check") == "items_sum")]
         return {
             "file": filename,
             "warnings": warnings,
+            "checks": inv["checks"],
             "n_pages": len(pages),
             "pages": [{k: v for k, v in p.items() if k not in ("fields", "items")} for p in pages],
             "fields": fields,
             "items": items,
             "items_check": next((p["items_check"] for p in pages if p.get("items_check")), {}),
-            "row": {"file": filename, **fields_to_row(fields), "N_ITEMS": str(len(items)), "ITEMS": items_to_text(items)},
+            "row": {"file": filename, **fields_to_row(fields), "N_ITEMS": str(len(items)), "CHECKS": inv["summary"], "ITEMS": items_to_text(items)},
         }
 
     def to_csv(self, results: list[dict]) -> bytes:

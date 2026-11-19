@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from ..config import MAX_UPLOAD_MB, MODEL_PATH
+from ..config import MAX_UPLOAD_MB
 from ..inference.extractor import ModelNotFound
 from ..inference.service import CSV_NAMES, DocumentService
 from . import accounts

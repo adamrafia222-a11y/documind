@@ -12,7 +12,7 @@ What it does: starts from a model that already reads text (downloaded once from 
 every epoch the model is scored on validation crops (CER = share of characters wrong); the best one is saved in models/ocr_trocr, with its
 log in reports/ocr_train_log.json. Training stops early when the score has not improved for --patience epochs.
 
-Needs: pip install -r requirements-ocr.txt (transformers, sentencepiece, accelerate) next to your GPU build of PyTorch, internet access to
+Needs: pip install -r requirements.txt (transformers, sentencepiece, accelerate) next to your GPU build of PyTorch, internet access to
 huggingface.co on the first run. Mixed precision (bfloat16) is used on GPUs that support it.
 """
 from __future__ import annotations

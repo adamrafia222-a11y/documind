@@ -5,7 +5,7 @@
     python -m documind.training.train_receipts --model yolo11n.pt --epochs 40   # smaller / faster
     python -m documind.training.train_receipts --eval-only                      # re-score models/receipts_yolo.pt on val and test
 
-Needs the extra packages of requirements-receipts.txt (Ultralytics + PyTorch). Use a GPU (Colab / Kaggle, or your own);
+Needs the extra packages of requirements.txt (Ultralytics + PyTorch). Use a GPU (Colab / Kaggle, or your own);
 on a CPU it works but takes hours. Results: reports/receipts_runs/<name>/ (curves, confusion matrix), reports/receipts_report.json
 (precision / recall / mAP per class on val AND test), models/receipts_yolo.pt (the best weights).
 
@@ -76,7 +76,7 @@ def _yolo():
     try:
         from ultralytics import YOLO
     except ImportError:
-        raise SystemExit("Ultralytics is not installed in this environment. Run:  pip install -r requirements-receipts.txt")
+        raise SystemExit("Ultralytics is not installed in this environment. Run:  pip install -r requirements.txt")
     return YOLO
 
 

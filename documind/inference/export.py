@@ -26,4 +26,4 @@ def rows_to_csv(rows: list[dict], columns: list[str]) -> bytes:
 
 
 def csv_columns(classes: list[str]) -> list[str]:
-    return ["file"] + [c for c in classes if c != BACKGROUND_LABEL] + ["N_ITEMS", "ITEMS"]
+    return ["file"] + [c for c in classes if c != BACKGROUND_LABEL] + ["N_ITEMS", "CHECKS", "ITEMS"]

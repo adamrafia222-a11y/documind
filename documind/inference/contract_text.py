@@ -19,7 +19,7 @@ import unicodedata
 import cv2
 import numpy as np
 
-from ..ocr import run_ocr
+from ..ocr import reconstruct, run_ocr
 from .postprocess import _lines
 
 _MONTH = (r"(?:jan(?:uary|vier)?|feb(?:ruary)?|f[ée]v(?:rier)?|march?|mars|apr(?:il)?|avr(?:il)?|may|mai|june?|juin|july?|juil(?:let)?|aug(?:ust)?|ao[uû]t|"
@@ -277,8 +277,12 @@ def read_contract_text(img, lang: str | None = None) -> dict:
     k = float(np.clip(1800.0 / max(H, W), 1.0, 2.5))                                          # small picture: enlarge, Tesseract wants ~30 px letters
     big = cv2.resize(gray, None, fx=k, fy=k, interpolation=cv2.INTER_CUBIC) if k > 1.05 else gray
     words = run_ocr(big, scale=k if k > 1.05 else 1.0, lang=lang, psm=6, handwriting=True)
+    if words and reconstruct.mode() == "on":
+        # Stage B (opt-in: DOCUMIND_RECONSTRUCT=on, after compare_reconstruct shows it wins) (same as the invoice): the doubtful chunks are re-read by the OCR model (pretrained or yours) and put in canonical spelling BEFORE the
+        # terms are searched in the sentences. Nothing is trained on these words (the terms come from patterns), so no retraining is needed.
+        words = reconstruct.reconstruct_words(big, words, k if k > 1.05 else 1.0)
     if not words:
         return {"fields": {}, "not_applicable": set(), "n_words": 0}
     fields, na = parse_terms(words, float(W), float(H))
     fields.update(find_signatures(gray, words))
-    return {"fields": fields, "not_applicable": na, "n_words": len(words)}
+    return {"fields": fields, "not_applicable": na, "n_words": len(words), "reconstructed_words": sum(1 for w in words if w.get("refined"))}

@@ -124,6 +124,7 @@ def save_model(fit: dict, corpus_meta: dict, n_docs: int, n_words: int) -> None:
         "classes": fit["classes"], "corpus": corpus_meta, "n_documents": n_docs, "n_words": n_words,
         "best_iteration": int(model.best_iteration_ or cfg.n_estimators),
         "ocr_lang": corpus_meta.get("ocr_lang"), "ocr_psm": corpus_meta.get("ocr_psm"),
+        "reconstruct": bool(corpus_meta.get("reconstruct")),      # corpus built with --reconstruct: the extractor must read pages the same way
     }
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)

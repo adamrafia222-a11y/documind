@@ -5,8 +5,12 @@ import cv2
 import numpy as np
 
 
-def augment_photo_like(img: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Make a clean document look like a phone photo (no geometric change, so labels stay valid)."""
+def augment_photo_like(img: np.ndarray, rng: np.random.Generator, lowres: bool = False) -> np.ndarray:
+    """Make a clean document look like a phone photo (no geometric change, so labels stay valid). lowres=True also loses resolution, like a picture sent by a messaging app."""
+    if lowres:
+        f = float(rng.uniform(0.45, 0.9))
+        small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+        img = cv2.resize(small, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
     out = img.astype(np.float32)
     out = out * rng.uniform(0.7, 1.2) + rng.uniform(-30, 20)               # brightness / contrast
     h, w = out.shape[:2]

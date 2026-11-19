@@ -189,7 +189,7 @@ def load_model(path: Path = MODEL_PATH):
         try:
             from ultralytics import YOLO
         except ImportError:
-            raise SystemExit("Ultralytics is not installed in this environment. Run:  pip install -r requirements-receipts.txt")
+            raise SystemExit("Ultralytics is not installed in this environment. Run:  pip install -r requirements.txt")
         _model = YOLO(str(path))
     return _model
 
@@ -384,6 +384,12 @@ def merge_layout(got: dict, layout: dict, need: set) -> dict:
 def extract_cheque_bytes(data: bytes, filename: str = "cheque", conf: float = 0.25, lang: str | None = None, model=None) -> dict:
     """Picture / PDF bytes -> the same kind of dict as the other extractors (fields, items, row, columns, warnings, doc_type) plus `checks`."""
     img, n_pages = _open_receipt_image(data, filename)
+    orig_w, orig_h = img.width, img.height                                        # the ORIGINAL picture: the screen draws the boxes on it
+    canon = None
+    from ..ocr import reconstruct
+    if reconstruct.pages_active():
+        from ..preprocessing import canonicalize_pil
+        img, canon = canonicalize_pil(img, "cheque")                                   # Stage A: the page cut out, upright, evenly lit
     dets, notes = [], []
     try:
         model = model or load_model()
@@ -419,6 +425,8 @@ def extract_cheque_bytes(data: bytes, filename: str = "cheque", conf: float = 0.
     fields = [{"label": FIELD_LABELS[k], "text": (shown.get(k) or x["value"] or x["raw_text"]), "confidence": x["box_confidence"], "bbox": x["bbox"], "page": 1, "source": x.get("source", "detector"), **({"readings": x["readings"]} if x.get("readings") else {})}
               for k, x in got.items() if x["value"] or x["raw_text"]]
     fields.sort(key=lambda f: (f["bbox"][1], f["bbox"][0]))
+    if canon is not None:
+        canon.map_back(fields)
     warnings = list(res["warnings"])
     if n_pages > 1:
         warnings.append({"code": "first_page_only", "message": f"The PDF has {n_pages} pages: only the first page was read."})
@@ -426,7 +434,7 @@ def extract_cheque_bytes(data: bytes, filename: str = "cheque", conf: float = 0.
            "PLACE": v["place"], "DATE": v.get("date", ""), "ACCOUNT_NO": v["account_no"], "MICR": v["micr"],
            "SIGNATURE": "yes" if res["checks"]["signature_present"] else "no", "AMOUNT_CHECK": v["amount_check"]}
     return {"file": filename, "doc_type": "cheque", "warnings": warnings, "n_pages": n_pages,
-            "pages": [{"page": 1, "width": img.width, "height": img.height, "size": [img.width, img.height]}],
+            "pages": [{"page": 1, "width": orig_w, "height": orig_h, "size": [orig_w, orig_h], **({"canonical_steps": canon.steps} if canon is not None else {})}],
             "fields": fields, "items": [], "items_check": {}, "checks": res["checks"], "row": row, "columns": CHEQUE_COLUMNS}
 
 

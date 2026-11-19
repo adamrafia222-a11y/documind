@@ -75,8 +75,33 @@ def _read_nbest(self, image: Image.Image, n: int = 5) -> list[str]:
 TrOCRRecognizer.read_nbest = _read_nbest
 
 
+PRETRAINED = os.getenv("RECONSTRUCT_OCR_MODEL", "microsoft/trocr-base-printed")     # or microsoft/trocr-small-printed (3x faster), or any TrOCR folder / hub id
+_pre_engine = None
+_pre_tried = False
+
+
+def pretrained_engine():
+    """A PRETRAINED printed-text recognizer (no training needed; the first use downloads ~1.3 GB from Hugging Face, then it is cached), or None.
+
+    Used when models/ocr_trocr (your fine-tuned one) does not exist, so a picture that is uploaded is still re-read by a real OCR model.
+    DOCUMIND_PRETRAINED_OCR=off disables it; RECONSTRUCT_OCR_MODEL chooses the model.
+    """
+    global _pre_engine, _pre_tried
+    if os.getenv("DOCUMIND_PRETRAINED_OCR", "on").lower() in ("0", "off", "false", "no"):
+        return None
+    if _pre_engine is None and not _pre_tried:
+        _pre_tried = True
+        try:
+            _pre_engine = TrOCRRecognizer(PRETRAINED)                              # a hub id: kept as a string (a Path would break it on Windows)
+        except Exception as exc:                                                   # no torch / transformers, no internet and no cache: Tesseract alone
+            import warnings
+            warnings.warn(f"pretrained OCR model {PRETRAINED!r} not available ({type(exc).__name__}: {exc}); Tesseract alone. "
+                          "Install: pip install -r requirements.txt (in the environment with PyTorch)", stacklevel=2)
+    return _pre_engine
+
+
 def get_engine(model_dir: Path = MODEL_DIR):
-    """The shared recognizer, or None (-> Tesseract). Loaded once, on first use."""
+    """The shared recognizer: your fine-tuned one (models/ocr_trocr) if it exists, else the pretrained printed one, else None (-> Tesseract). Loaded once."""
     global _engine, _tried
     mode = os.getenv("DOCUMIND_OCR", "auto").lower()
     if mode == "tesseract":
@@ -87,11 +112,10 @@ def get_engine(model_dir: Path = MODEL_DIR):
         if not available(model_dir):
             if strict:
                 raise SystemExit(f"DOCUMIND_OCR={mode} but {model_dir} does not exist. Train it: python -m documind.training.train_ocr")
-            return None
-        try:
-            _engine = TrOCRRecognizer(model_dir)
-        except ImportError as exc:
-            if strict:
-                raise SystemExit(f"DOCUMIND_OCR={mode} but a package is missing ({exc}). Run: pip install -r requirements-ocr.txt")
-            return None
-    return _engine
+        else:
+            try:
+                _engine = TrOCRRecognizer(model_dir)
+            except ImportError as exc:
+                if strict:
+                    raise SystemExit(f"DOCUMIND_OCR={mode} but a package is missing ({exc}). Run: pip install -r requirements-ocr.txt")
+    return _engine if _engine is not None else pretrained_engine()

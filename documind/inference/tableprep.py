@@ -38,9 +38,8 @@ def strip_lines(g):
     out = g.copy(); out[cv2.dilate(keep, np.ones((3, 3), np.uint8)) > 0] = 255; return out, True
 
 
-def grid(g):
-    """Cells of a fully ruled table: ([(x0, y0, x1, y1), ...], (table box), inset) in the pixels of g, or None."""
-    hm, vm = _rules(g)
+def _grid_global(g, hm, vm):
+    """First attempt (unchanged): lines are the rows / columns of the whole picture whose ruled length is at least half of the longest one."""
     H, W = g.shape
     def pos(m, axis, minlen):
         prof = m.sum(axis=axis) / 255.0
@@ -51,9 +50,53 @@ def grid(g):
     ys, yt = pos(hm, 1, 0.15 * W)
     xs, xt = pos(vm, 0, 0.05 * H)
     if len(ys) < 3 or len(xs) < 3: return None
+    return ys, xs, int(max(yt + xt)) // 2 + 3
+
+
+def _grid_local(g, hm, vm):
+    """Second attempt, local to the table: the page border, a frame or a shadow can be the longest line of the picture and make every inner
+    rule of the table look short. Here the table is found from its own horizontal rules, and its vertical rules are looked for inside that box only."""
+    H, W = g.shape
+    n, _, st, _ = cv2.connectedComponentsWithStats(hm, connectivity=8)
+    segs = [(int(x), int(x + w), y + h / 2.0, int(h)) for x, y, w, h, _a in st[1:]
+            if 0.2 * W <= w < 0.97 * W and h <= max(10, 0.02 * H) and 0.02 * H < y < 0.98 * H]          # not a page frame / edge: those lines span the picture or hug its border
+    if len(segs) < 3: return None
+    widest = max(b - a for a, b, _y, _h in segs)
+    main = [sg for sg in segs if sg[1] - sg[0] >= 0.6 * widest]
+    if len(main) < 3: return None
+    x0, x1 = int(np.median([a for a, _b, _y, _h in main])), int(np.median([b for _a, b, _y, _h in main]))
+    main = [sg for sg in main if min(sg[1], x1) - max(sg[0], x0) >= 0.7 * (x1 - x0)]        # the rules that span the same width = this table
+    ys = sorted(sg[2] for sg in main)
+    merged = [[ys[0]]]
+    for y in ys[1:]:
+        merged[-1].append(y) if y - merged[-1][-1] <= 4 else merged.append([y])
+    ys = [int(np.mean(m)) for m in merged]
+    if len(ys) < 3: return None
+    y0, y1 = ys[0], ys[-1]
+    sub = vm[max(0, y0 - 2): y1 + 3, max(0, x0 - 4): x1 + 5]
+    prof = sub.sum(axis=0) / 255.0
+    idx = np.where(prof >= 0.5 * (y1 - y0))[0]
+    xs = []
+    if len(idx):
+        groups = np.split(idx, np.where(np.diff(idx) > 3)[0] + 1)
+        xs = [int(gp.mean()) + max(0, x0 - 4) for gp in groups]
+    for edge in (x0, x1):                                                                  # an open table (no outer vertical rule): its width gives the edge
+        if not any(abs(edge - x) <= 8 for x in xs): xs.append(edge)
+    xs = sorted(xs)
+    if len(xs) < 3: return None
+    thick = float(np.median([sg[3] for sg in main]))
+    return ys, xs, int(thick) // 2 + 3
+
+
+def grid(g):
+    """Cells of a fully ruled table: ([(x0, y0, x1, y1), ...], (table box), inset) in the pixels of g, or None."""
+    hm, vm = _rules(g)
+    found = _grid_global(g, hm, vm) or _grid_local(g, hm, vm)
+    if not found: return None
+    ys, xs, inset = found
     cells = [(xs[i], ys[j], xs[i + 1], ys[j + 1]) for j in range(len(ys) - 1) for i in range(len(xs) - 1) if xs[i + 1] - xs[i] > 14 and ys[j + 1] - ys[j] > 14]
     if not 6 <= len(cells) <= 400: return None
-    return cells, (xs[0], ys[0], xs[-1], ys[-1]), int(max(yt + xt)) // 2 + 3
+    return cells, (xs[0], ys[0], xs[-1], ys[-1]), inset
 
 
 def denoise(img):
